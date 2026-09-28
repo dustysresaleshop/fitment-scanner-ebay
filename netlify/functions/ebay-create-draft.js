@@ -28,7 +28,8 @@ exports.handler = async (event) => {
     const headers = {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${accessToken}`,
-      'Content-Language': 'en-US'
+      'Content-Language': 'en-US',
+      'Accept-Language': 'en-US'
     };
 
     step = 'inventory_item';
