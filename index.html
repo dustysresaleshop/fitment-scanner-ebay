@@ -121,6 +121,16 @@
       <thead><tr><th>Make</th><th>Model</th><th>Years</th></tr></thead>
       <tbody id="fitBody"></tbody>
     </table>
+    <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line);">
+      <div class="part-meta" style="margin-bottom:8px;">Your price (USD)</div>
+      <div class="row">
+        <input type="text" id="priceInput" placeholder="e.g. 24.99" inputmode="decimal" autocomplete="off">
+        <button class="btn-copy" id="priceBtn">Find prices on eBay</button>
+      </div>
+      <div class="status" id="priceStatus"></div>
+      <div id="priceList" style="font-size:13px;"></div>
+      <div class="demo-codes"><a id="soldLink" href="#" target="_blank" rel="noopener" style="color:var(--yellow);">See sold prices on eBay</a></div>
+    </div>
     <button class="btn-primary" id="draftBtn" style="margin-top:14px;">Generate eBay listing draft</button>
   </div>
 
@@ -211,6 +221,10 @@
     });
     resultPanel.dataset.code = rawCode;
     resultPanel.dataset.entry = JSON.stringify(entry);
+    document.getElementById('priceInput').value = '';
+    document.getElementById('priceStatus').textContent = '';
+    document.getElementById('priceList').innerHTML = '';
+    document.getElementById('soldLink').href = 'https://www.ebay.com/sch/i.html?_nkw=' + encodeURIComponent(entry.oem) + '&LH_Sold=1&LH_Complete=1';
     resultPanel.classList.remove('hidden');
     resultPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
@@ -290,6 +304,47 @@
     draftPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   });
 
+  document.getElementById('priceBtn').addEventListener('click', async () => {
+    const entry = JSON.parse(resultPanel.dataset.entry);
+    const priceStatus = document.getElementById('priceStatus');
+    const priceList = document.getElementById('priceList');
+    priceList.innerHTML = '';
+    priceStatus.textContent = 'Searching eBay...';
+    priceStatus.className = 'status';
+    try {
+      const resp = await fetch('/.netlify/functions/ebay-price-comps?q=' + encodeURIComponent(entry.oem));
+      const raw = await resp.text();
+      let data = {};
+      try { data = JSON.parse(raw); } catch (e) {}
+      if (!resp.ok) {
+        priceStatus.textContent = `Error ${resp.status}: ${(data.message || raw).slice(0, 400)}`;
+        priceStatus.className = 'status err';
+        return;
+      }
+      if (!data.count) {
+        priceStatus.textContent = 'No current eBay listings found for this part number. Try the sold-prices link below.';
+        priceStatus.className = 'status';
+        return;
+      }
+      document.getElementById('priceInput').value = data.suggested.toFixed(2);
+      priceStatus.textContent = `${data.count} current listings: low $${data.low.toFixed(2)}, middle $${data.median.toFixed(2)}, high $${data.high.toFixed(2)}. Filled in the middle price. Change it if you want. These are asking prices, not sold prices.`;
+      priceStatus.className = 'status ok';
+      data.listings.forEach(l => {
+        const row = document.createElement('div');
+        row.style.cssText = 'padding:6px 0;border-top:1px solid var(--line);';
+        const a = document.createElement('a');
+        a.href = l.url; a.target = '_blank'; a.rel = 'noopener';
+        a.style.color = 'var(--text)';
+        a.textContent = `$${l.price.toFixed(2)} · ${l.condition || ''} · ${l.title}`;
+        row.appendChild(a);
+        priceList.appendChild(row);
+      });
+    } catch (err) {
+      priceStatus.textContent = 'Could not reach the price lookup.';
+      priceStatus.className = 'status err';
+    }
+  });
+
   document.getElementById('pushBtn').addEventListener('click', async () => {
     const code = resultPanel.dataset.code;
     const entry = JSON.parse(resultPanel.dataset.entry);
@@ -298,20 +353,28 @@
     const fitLines = entry.fits.map(f => `${f.make} ${f.model} (${f.years})`).join(', ');
     const description = `Genuine OEM ${entry.name}, part number ${entry.oem}. Confirmed fitment: ${fitLines}.`;
     const pushStatus = document.getElementById('pushStatus');
+    const price = document.getElementById('priceInput').value.trim().replace(/^\$/, '');
+    if (!/^\d+(\.\d{1,2})?$/.test(price)) {
+      pushStatus.textContent = 'Enter a price first (numbers only, like 24.99).';
+      pushStatus.className = 'status err';
+      return;
+    }
     pushStatus.textContent = 'Sending to eBay...';
     pushStatus.className = 'status';
     try {
       const resp = await fetch('/.netlify/functions/ebay-create-draft', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sku: entry.oem, title, description, oem: entry.oem })
+        body: JSON.stringify({ sku: entry.oem, title, description, oem: entry.oem, price })
       });
-      const data = await resp.json().catch(() => ({}));
+      const raw = await resp.text();
+      let data = {};
+      try { data = JSON.parse(raw); } catch (e) {}
       if (resp.ok) {
         pushStatus.textContent = `Draft created on eBay (offer ${data.offerId}).`;
         pushStatus.className = 'status ok';
       } else {
-        pushStatus.textContent = `eBay rejected the draft: ${JSON.stringify(data).slice(0, 200)}`;
+        pushStatus.textContent = `Error ${resp.status}: ${raw.slice(0, 800)}`;
         pushStatus.className = 'status err';
       }
     } catch (err) {
