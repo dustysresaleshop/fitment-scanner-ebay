@@ -19,13 +19,14 @@ exports.handler = async (event) => {
     const resp = await fetch(url, {
       headers: {
         Authorization: `Bearer ${token}`,
-        'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US'
+        'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
+        Accept: 'application/json'
       }
     });
     const text = await resp.text();
 
     if (!resp.ok) {
-      return { statusCode: resp.status, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: text.slice(0, 500) }) };
+      return { statusCode: resp.status, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: text.slice(0, 500), requestUrl: url }) };
     }
 
     const data = JSON.parse(text);
