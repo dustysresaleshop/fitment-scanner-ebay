@@ -16,10 +16,21 @@ function summarize(text) {
   return String(text).slice(0, 300);
 }
 
+// Turns "1992-1995" or "1995" into [1992,1993,1994,1995] or [1995].
+// eBay's vehicle filter matches on individual years, not ranges.
+function expandYears(yearsStr) {
+  const parts = String(yearsStr).split(/[\u2013-]/).map(s => s.trim());
+  const start = parseInt(parts[0], 10);
+  const end = parts.length > 1 ? parseInt(parts[1], 10) : start;
+  const years = [];
+  for (let y = start; y <= end; y++) years.push(y);
+  return years;
+}
+
 exports.handler = async (event) => {
   let step = 'start';
   try {
-    const { sku, title, description, oem, price } = JSON.parse(event.body || '{}');
+    const { sku, title, description, oem, price, fits } = JSON.parse(event.body || '{}');
     if (!sku || !title) return reply(400, { step, message: 'Missing sku or title.' });
 
     step = 'token';
@@ -50,6 +61,33 @@ exports.handler = async (event) => {
       return reply(itemResp.status, { step, message: summarize(await itemResp.text()) });
     }
 
+    // Send the vehicle list in eBay's own format, so a buyer filtering by
+    // their vehicle on eBay Motors will actually find this part.
+    if (Array.isArray(fits) && fits.length) {
+      step = 'compatibility';
+      const compatibilityList = [];
+      fits.forEach(f => {
+        expandYears(f.years).forEach(year => {
+          compatibilityList.push({
+            compatibilityProperties: [
+              { name: 'Make', value: f.make },
+              { name: 'Model', value: f.model },
+              { name: 'Year', value: String(year) }
+            ]
+          });
+        });
+      });
+
+      const compResp = await fetch(`${base}/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}/product_compatibility`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ compatibilityList })
+      });
+      if (!compResp.ok && compResp.status !== 204) {
+        return reply(compResp.status, { step, message: summarize(await compResp.text()) });
+      }
+    }
+
     step = 'offer';
     const policies = {};
     if (process.env.EBAY_FULFILLMENT_POLICY_ID) policies.fulfillmentPolicyId = process.env.EBAY_FULFILLMENT_POLICY_ID;
@@ -76,7 +114,6 @@ exports.handler = async (event) => {
     const offerText = await offerResp.text();
 
     if (!offerResp.ok) {
-      // If a draft offer for this SKU already exists, update it instead
       let existingId;
       try {
         const d = JSON.parse(offerText);
