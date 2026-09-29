@@ -1,3 +1,7 @@
+// Temporary diagnostic only. Visit this URL directly in a browser to test
+// eBay's compatibility endpoint with one simple, hardcoded entry, so we can
+// see the full raw response instead of a summarized error message.
+
 const { getAccessToken, apiBase } = require('./utils/ebay-auth');
 
 exports.handler = async () => {
@@ -7,12 +11,13 @@ exports.handler = async () => {
     const sku = '10137665';
 
     const body = {
-      compatibilityList: [
+      sku,
+      compatibleProducts: [
         {
           compatibilityProperties: [
-            { name: 'Make', value: 'Chevrolet' },
-            { name: 'Model', value: 'Blazer' },
-            { name: 'Year', value: '1993' }
+            { name: 'make', value: 'Chevrolet' },
+            { name: 'model', value: 'Blazer' },
+            { name: 'year', value: '1993' }
           ]
         }
       ]
