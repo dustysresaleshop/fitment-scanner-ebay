@@ -46,6 +46,24 @@ exports.handler = async (event) => {
       'Accept-Language': 'en-US'
     };
 
+    // Check how many of this part are already listed, so a repeat scan adds
+    // to the count instead of resetting it back to 1 each time.
+    step = 'check_quantity';
+    let quantity = 1;
+    const existingItemResp = await fetch(`${base}/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Accept-Language': 'en-US' }
+    });
+    if (existingItemResp.ok) {
+      const existingItem = await existingItemResp.json();
+      const currentQty = existingItem.availability && existingItem.availability.shipToLocationAvailability
+        ? existingItem.availability.shipToLocationAvailability.quantity
+        : 0;
+      quantity = (currentQty || 0) + 1;
+    }
+    // A 404 here just means this part has never been scanned before, so it
+    // starts at quantity 1, which is already the default above.
+
     step = 'inventory_item';
     const itemResp = await fetch(`${base}/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}`, {
       method: 'PUT',
@@ -57,7 +75,7 @@ exports.handler = async (event) => {
           aspects: oem ? { 'OEM Part Number': [oem] } : undefined
         },
         condition: 'NEW',
-        availability: { shipToLocationAvailability: { quantity: 1 } }
+        availability: { shipToLocationAvailability: { quantity } }
       })
     });
     if (!itemResp.ok && itemResp.status !== 204) {
@@ -104,7 +122,7 @@ exports.handler = async (event) => {
       marketplaceId: 'EBAY_US',
       format: 'FIXED_PRICE',
       listingDescription: description,
-      availableQuantity: 1,
+      availableQuantity: quantity,
       categoryId: process.env.EBAY_DEFAULT_CATEGORY_ID || '33564',
       pricingSummary: { price: { value: price || '19.99', currency: 'USD' } },
       merchantLocationKey: process.env.EBAY_MERCHANT_LOCATION_KEY || 'main-warehouse'
@@ -133,7 +151,7 @@ exports.handler = async (event) => {
           body: JSON.stringify(offer)
         });
         if (upd.ok || upd.status === 204) {
-          return reply(200, { message: 'Existing draft updated on eBay.', offerId: existingId });
+          return reply(200, { message: `Existing draft updated on eBay. Quantity is now ${quantity}.`, offerId: existingId });
         }
         return reply(upd.status, { step: 'offer_update', message: summarize(await upd.text()) });
       }
@@ -142,7 +160,7 @@ exports.handler = async (event) => {
 
     let offerData = {};
     try { offerData = JSON.parse(offerText); } catch (e) {}
-    return reply(200, { message: 'Draft created on eBay.', offerId: offerData.offerId });
+    return reply(200, { message: `Draft created on eBay. Quantity is ${quantity}.`, offerId: offerData.offerId });
   } catch (err) {
     return reply(500, { step, message: err.message });
   }
