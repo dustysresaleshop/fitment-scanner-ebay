@@ -172,7 +172,25 @@
       name: "Fuel Vapor Canister Purge Solenoid Valve Bracket",
       oem: "10137665",
       fits: [
-        { make: "GM", model: "Trucks, Vans & SUVs", years: "1992–1995" }
+        { make: "Chevrolet", model: "Blazer", years: "1992-1994" },
+        { make: "Chevrolet", model: "C1500", years: "1992-1995" },
+        { make: "Chevrolet", model: "C2500", years: "1992-1995" },
+        { make: "Chevrolet", model: "G10", years: "1995" },
+        { make: "Chevrolet", model: "G20", years: "1995" },
+        { make: "Chevrolet", model: "G30", years: "1995" },
+        { make: "Chevrolet", model: "K1500", years: "1992-1995" },
+        { make: "Chevrolet", model: "K2500", years: "1992-1995" },
+        { make: "Chevrolet", model: "Suburban", years: "1992-1995" },
+        { make: "Chevrolet", model: "Tahoe", years: "1995" },
+        { make: "GMC", model: "C1500", years: "1992-1995" },
+        { make: "GMC", model: "C2500", years: "1992-1995" },
+        { make: "GMC", model: "G1500", years: "1995" },
+        { make: "GMC", model: "G2500", years: "1995" },
+        { make: "GMC", model: "G3500", years: "1995" },
+        { make: "GMC", model: "K1500", years: "1992-1995" },
+        { make: "GMC", model: "K2500", years: "1992-1995" },
+        { make: "GMC", model: "Suburban", years: "1992-1995" },
+        { make: "GMC", model: "Yukon", years: "1992-1995" }
       ]
     },
     // A couple of raw UPCs so a real barcode scan has something to hit in demo
@@ -317,7 +335,7 @@
       const resp = await fetch('/.netlify/functions/ebay-create-draft', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sku: entry.oem, title, description, oem: entry.oem, price })
+        body: JSON.stringify({ sku: entry.oem, title, description, oem: entry.oem, price, fits: entry.fits })
       });
       const raw = await resp.text();
       let data = {};
