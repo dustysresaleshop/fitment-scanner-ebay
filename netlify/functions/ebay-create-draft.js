@@ -66,16 +66,18 @@ exports.handler = async (event) => {
 
     // Send the vehicle list in eBay's own format, so a buyer filtering by
     // their vehicle on eBay Motors will actually find this part.
+    // eBay's field is "compatibleProducts", and its property names are
+    // lowercase ("make"/"model"/"year") -- confirmed via a live test call.
     if (Array.isArray(fits) && fits.length) {
       step = 'compatibility';
-      const compatibilityList = [];
+      const compatibleProducts = [];
       fits.forEach(f => {
         expandYears(f.years).forEach(year => {
-          compatibilityList.push({
+          compatibleProducts.push({
             compatibilityProperties: [
-              { name: 'Make', value: f.make },
-              { name: 'Model', value: f.model },
-              { name: 'Year', value: String(year) }
+              { name: 'make', value: f.make },
+              { name: 'model', value: f.model },
+              { name: 'year', value: String(year) }
             ]
           });
         });
@@ -84,7 +86,7 @@ exports.handler = async (event) => {
       const compResp = await fetch(`${base}/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}/product_compatibility`, {
         method: 'PUT',
         headers,
-        body: JSON.stringify({ compatibilityList })
+        body: JSON.stringify({ sku, compatibleProducts })
       });
       if (!compResp.ok && compResp.status !== 204) {
         return reply(compResp.status, { step, message: summarize(await compResp.text()) });
