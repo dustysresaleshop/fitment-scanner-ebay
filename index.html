@@ -245,9 +245,12 @@
     showResult(rawCode, CATALOG[key] || null);
   }
 
-  document.getElementById('lookupBtn').addEventListener('click', () => {
+    document.getElementById('lookupBtn').addEventListener('click', () => {
     const v = document.getElementById('manualInput').value;
-    if (v.trim()) lookup(v);
+    if (v.trim()) {
+      lookup(v);
+      document.getElementById('manualInput').value = '';
+    }
   });
   document.getElementById('manualInput').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') document.getElementById('lookupBtn').click();
@@ -340,8 +343,8 @@
       const raw = await resp.text();
       let data = {};
       try { data = JSON.parse(raw); } catch (e) {}
-      if (resp.ok) {
-        pushStatus.textContent = `Draft created on eBay (offer ${data.offerId}).`;
+            if (resp.ok) {
+        pushStatus.textContent = data.message || `Draft created on eBay (offer ${data.offerId}).`;
         pushStatus.className = 'status ok';
       } else {
         pushStatus.textContent = `Error ${resp.status}: ${raw.slice(0, 800)}`;
