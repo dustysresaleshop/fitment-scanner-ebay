@@ -10,7 +10,10 @@ function summarize(text) {
   try {
     const d = JSON.parse(text);
     if (d.errors && d.errors.length) {
-      return d.errors.map(e => `${e.errorId || ''} ${e.message || ''}`.trim()).join(' | ');
+      return d.errors.map(e => {
+        const params = (e.parameters || []).map(p => `${p.name}=${p.value}`).join(', ');
+        return `${e.errorId || ''} ${e.message || ''}${params ? ' [' + params + ']' : ''}`.trim();
+      }).join(' | ');
     }
   } catch (e) {}
   return String(text).slice(0, 300);
