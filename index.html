@@ -115,6 +115,11 @@
   /* Storage boxes */
   .box-info { font-size: 15px; font-weight: 600; }
   .box-info .code-chip { font-size: 14px; margin-right: 4px; }
+  .box-buttons { display: flex; gap: 8px; }
+
+  /* eBay category picker */
+  .cat-select { width: 100%; background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+                border-radius: 8px; padding: 10px; font-family: inherit; font-size: 14px; }
 
   @media (prefers-color-scheme: light) {
     :root:not([data-theme="dark"]) {
@@ -137,7 +142,10 @@
         <h2 style="margin:0 0 4px;">Storage box</h2>
         <div class="box-info" id="boxInfo"></div>
       </div>
-      <button class="btn-copy" id="boxEditBtn">Change</button>
+      <div class="box-buttons">
+        <button class="btn-copy" id="boxEditBtn">Change</button>
+        <button class="btn-copy" id="boxResetBtn">Reset</button>
+      </div>
     </div>
   </div>
 
@@ -175,6 +183,15 @@
       <thead><tr><th>Make</th><th>Model</th><th>Years</th></tr></thead>
       <tbody id="fitBody"></tbody>
     </table>
+    <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line);">
+      <div class="part-meta" style="margin-bottom:6px;">eBay category</div>
+      <select id="catSelect" class="cat-select" aria-label="eBay category"></select>
+      <div class="row" style="margin-top:8px;">
+        <input type="text" id="catSearch" placeholder="Search categories, e.g. piston rings" autocomplete="off" aria-label="Search eBay categories">
+        <button class="btn-copy" id="catSearchBtn">Search</button>
+      </div>
+      <div class="status" id="catStatus"></div>
+    </div>
     <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line);">
       <div class="part-meta" style="margin-bottom:8px;">Your price (USD)</div>
       <input type="text" id="priceInput" placeholder="e.g. 24.99" inputmode="decimal" autocomplete="off" style="width:100%;">
@@ -335,6 +352,7 @@
     document.getElementById('resultCode').textContent = rawCode;
     renderFits(rawCode, entry);
     renderWhere(entry.oem);
+    loadCategories(entry.name, entry.oem);
     document.getElementById('priceInput').value = '';
     document.getElementById('soldLink').href = 'https://www.ebay.com/sch/i.html?_nkw=' + encodeURIComponent(entry.oem) + '&LH_Sold=1&LH_Complete=1';
     resultPanel.classList.remove('hidden');
@@ -817,6 +835,79 @@
 
   renderBoxInfo();
 
+  document.getElementById('boxResetBtn').addEventListener('click', () => {
+    if (!confirm('Reset the box counter to Box A, #1, and clear the app\u2019s memory of which SKU and box each part went to?\n\nUse this when switching from Sandbox to real eBay listings. Saved manual fitment and categories are kept.')) return;
+    try {
+      Object.keys(localStorage)
+        .filter(k => k === BOX_KEY || k.startsWith('sku-of:v1:') || k.startsWith('where:v1:'))
+        .forEach(k => localStorage.removeItem(k));
+    } catch (e) {}
+    renderBoxInfo();
+    document.getElementById('whereInfo').classList.add('hidden');
+  });
+
+  // ---- eBay category for each part ----
+  const catSelect = document.getElementById('catSelect');
+  const catStatus = document.getElementById('catStatus');
+  let catRequest = 0;
+
+  function catFor(oem) {
+    try { return JSON.parse(localStorage.getItem('cat-of:v1:' + oem)); } catch (e) { return null; }
+  }
+  function rememberCat(oem, cat) {
+    try { localStorage.setItem('cat-of:v1:' + oem, JSON.stringify(cat)); } catch (e) {}
+  }
+  function catMsg(text, kind) {
+    catStatus.textContent = text;
+    catStatus.className = 'status' + (kind ? ' ' + kind : '');
+  }
+  function fillCategories(list, pickId) {
+    catSelect.innerHTML = '';
+    list.forEach(c => {
+      const o = document.createElement('option');
+      o.value = c.id;
+      o.textContent = c.path || c.name;
+      o.dataset.name = c.name;
+      o.dataset.path = c.path || c.name;
+      catSelect.appendChild(o);
+    });
+    if (pickId) catSelect.value = pickId;
+  }
+  function selectedCategory() {
+    const o = catSelect.options[catSelect.selectedIndex];
+    return o ? { id: o.value, name: o.dataset.name, path: o.dataset.path } : null;
+  }
+
+  async function loadCategories(query, oem) {
+    const saved = oem ? catFor(oem) : null;
+    const q = String(query || '').replace(/\(.*?\)/g, '').trim();
+    document.getElementById('catSearch').value = q;
+    const reqId = ++catRequest;
+    fillCategories(saved ? [saved] : [], saved && saved.id);
+    if (!q) { catMsg(saved ? '' : 'Search for a category below.'); return; }
+    catMsg('Finding eBay categories\u2026');
+    try {
+      const resp = await fetch('/.netlify/functions/ebay-category?q=' + encodeURIComponent(q));
+      const data = await resp.json();
+      if (reqId !== catRequest) return;
+      if (!resp.ok) { catMsg(data.error || 'Category search failed.', 'err'); return; }
+      let list = data.suggestions || [];
+      if (saved && !list.some(c => c.id === saved.id)) list = [saved, ...list];
+      if (!list.length) { catMsg('No categories found. Try a different search below.', 'err'); return; }
+      fillCategories(list, saved ? saved.id : list[0].id);
+      catMsg(saved ? 'Using the category you picked for this part before.' : 'Top match picked. Change it if it doesn\u2019t fit.');
+    } catch (e) {
+      if (reqId === catRequest) catMsg('Could not reach the category search.', 'err');
+    }
+  }
+
+  document.getElementById('catSearchBtn').addEventListener('click', () => {
+    loadCategories(document.getElementById('catSearch').value, null);
+  });
+  document.getElementById('catSearch').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); loadCategories(e.target.value, null); }
+  });
+
   document.getElementById('draftBtn').addEventListener('click', () => {
     const code = resultPanel.dataset.code;
     const entry = JSON.parse(resultPanel.dataset.entry);
@@ -851,6 +942,14 @@
       pushStatus.className = 'status err';
       return;
     }
+    const cat = selectedCategory();
+    if (!cat || !cat.id) {
+      pushStatus.textContent = 'Pick an eBay category first (above the price).';
+      pushStatus.className = 'status err';
+      return;
+    }
+    const firstMake = entry.fits[0] ? entry.fits[0].make : 'Ford';
+    const brand = /^(Ford|Mercury|Lincoln|Edsel)$/i.test(firstMake) ? 'Ford' : firstMake;
     const pushBtn = document.getElementById('pushBtn');
     if (pushBtn.disabled) return;
     const known = skuFor(entry.oem);
@@ -863,7 +962,7 @@
       const resp = await fetch('/.netlify/functions/ebay-create-draft', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sku, title, description, oem: entry.oem, price, fits: entry.fits })
+        body: JSON.stringify({ sku, title, description, oem: entry.oem, price, fits: entry.fits, categoryId: cat.id, brand })
       });
       const raw = await resp.text();
       let data = {};
@@ -871,6 +970,7 @@
             if (resp.ok) {
         const ebayMsg = data.message || `Draft created on eBay (offer ${data.offerId}).`;
         if (!known) rememberSku(entry.oem, sku);
+        rememberCat(entry.oem, cat);
         whereAdd(entry.oem, slot.box);
         const s = boxState();
         s.pushed += 1;
