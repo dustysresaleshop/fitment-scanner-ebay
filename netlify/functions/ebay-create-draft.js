@@ -33,8 +33,13 @@ function expandYears(yearsStr) {
 exports.handler = async (event) => {
   let step = 'start';
   try {
-    const { sku, title, description, oem, price, fits } = JSON.parse(event.body || '{}');
+    const { sku, title, description, oem, price, fits, categoryId, brand } = JSON.parse(event.body || '{}');
     if (!sku || !title) return reply(400, { step, message: 'Missing sku or title.' });
+
+    // Category chosen in the app for this part; falls back to the Netlify default
+    const category = /^\d+$/.test(String(categoryId || ''))
+      ? String(categoryId)
+      : (process.env.EBAY_DEFAULT_CATEGORY_ID || '33564');
 
     step = 'token';
     const accessToken = await getAccessToken();
@@ -64,6 +69,13 @@ exports.handler = async (event) => {
     // A 404 here just means this part has never been scanned before, so it
     // starts at quantity 1, which is already the default above.
 
+    // Item specifics most parts categories require
+    const aspects = { Brand: [String(brand || 'Ford').slice(0, 65)] };
+    if (oem) {
+      aspects['Manufacturer Part Number'] = [oem];
+      aspects['OEM Part Number'] = [oem];
+    }
+
     step = 'inventory_item';
     const itemResp = await fetch(`${base}/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}`, {
       method: 'PUT',
@@ -72,7 +84,7 @@ exports.handler = async (event) => {
         product: {
           title: title.slice(0, 80),
           description,
-          aspects: oem ? { 'OEM Part Number': [oem] } : undefined
+          aspects
         },
         condition: 'NEW',
         availability: { shipToLocationAvailability: { quantity } }
@@ -123,7 +135,7 @@ exports.handler = async (event) => {
       format: 'FIXED_PRICE',
       listingDescription: description,
       availableQuantity: quantity,
-      categoryId: process.env.EBAY_DEFAULT_CATEGORY_ID || '33564',
+      categoryId: category,
       pricingSummary: { price: { value: price || '19.99', currency: 'USD' } },
       merchantLocationKey: process.env.EBAY_MERCHANT_LOCATION_KEY || 'main-warehouse'
     };
