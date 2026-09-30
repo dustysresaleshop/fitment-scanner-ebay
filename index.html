@@ -93,6 +93,15 @@
                         font-family: 'IBM Plex Mono', monospace; font-size: 22px; }
   #webcam-scan:not(:empty) { margin-bottom: 10px; }
 
+  /* Automatic lookup: source notes and engine picker */
+  .lookup-note { margin-top: 10px; font-size: 12px; color: var(--muted); line-height: 1.45; }
+  .lookup-note div + div { margin-top: 4px; }
+  .lookup-note .warn { color: var(--yellow); }
+  .lookup-note a { color: var(--yellow); }
+  #engineFilter:not(.hidden) { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 12px; }
+  #engineFilter .part-meta { flex-basis: 100%; }
+  #engineFilter label { display: flex; gap: 6px; align-items: center; font-size: 14px; cursor: pointer; }
+
   @media (prefers-color-scheme: light) {
     :root:not([data-theme="dark"]) {
       --bg: #f4f1ea; --panel: #fff; --panel-2: #ece8df; --line: #d9d3c4; --text: #17181a; --muted: #6b6355;
@@ -124,7 +133,7 @@
   <div class="panel">
     <h2>Or enter part number</h2>
     <div class="row">
-      <input type="text" id="manualInput" placeholder="e.g. GM-15891234" autocomplete="off">
+      <input type="text" id="manualInput" placeholder="e.g. E9SZ-6507-B" autocomplete="off">
       <button class="btn-copy" id="lookupBtn">Look up</button>
     </div>
     <div class="demo-codes">Try: <span data-code="GM-15891234">GM-15891234</span>, <span data-code="FRD-DG9Z8501AA">FRD-DG9Z8501AA</span>, <span data-code="TOY-8112002561">TOY-8112002561</span></div>
@@ -135,6 +144,8 @@
     <span class="code-chip" id="resultCode"></span>
     <div class="part-name" id="resultName"></div>
     <div class="part-meta" id="resultMeta"></div>
+    <div class="lookup-note hidden" id="lookupNote"></div>
+    <div class="hidden" id="engineFilter"></div>
     <table class="fit" id="fitTable">
       <thead><tr><th>Make</th><th>Model</th><th>Years</th></tr></thead>
       <tbody id="fitBody"></tbody>
@@ -232,37 +243,191 @@
 
   function normalize(code) { return (code || '').trim().toUpperCase(); }
 
-  function showResult(rawCode, entry) {
-    draftPanel.classList.add('hidden');
-    if (!entry) {
-      resultPanel.classList.add('hidden');
-      scanStatus.textContent = `No 1:1 OEM match for "${rawCode}". Try a demo code, or this part isn't in the v1 catalog.`;
-      scanStatus.className = 'status err';
-      return;
-    }
-    scanStatus.textContent = `Matched.`;
-    scanStatus.className = 'status ok';
-    document.getElementById('resultCode').textContent = rawCode;
+  function setStatus(text, kind) {
+    scanStatus.textContent = text;
+    scanStatus.className = 'status' + (kind ? ' ' + kind : '');
+    scanStatus.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  function renderFits(rawCode, entry) {
     document.getElementById('resultName').textContent = entry.name;
     document.getElementById('resultMeta').textContent = `OEM #${entry.oem} · ${entry.fits.length} compatible vehicle${entry.fits.length > 1 ? 's' : ''}`;
     const body = document.getElementById('fitBody');
     body.innerHTML = '';
     entry.fits.forEach(f => {
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${f.make}</td><td>${f.model}</td><td>${f.years}</td>`;
+      [f.make, f.model, f.years].forEach(v => {
+        const td = document.createElement('td');
+        td.textContent = v;
+        tr.appendChild(td);
+      });
       body.appendChild(tr);
     });
     resultPanel.dataset.code = rawCode;
     resultPanel.dataset.entry = JSON.stringify(entry);
+  }
+
+  function showResult(rawCode, entry) {
+    draftPanel.classList.add('hidden');
+    if (!entry) {
+      resultPanel.classList.add('hidden');
+      setStatus(`No match for "${rawCode}". It's not in the catalog and doesn't look like a Ford part number.`, 'err');
+      return;
+    }
+    scanStatus.textContent = `Matched.`;
+    scanStatus.className = 'status ok';
+    document.getElementById('resultCode').textContent = rawCode;
+    renderFits(rawCode, entry);
     document.getElementById('priceInput').value = '';
     document.getElementById('soldLink').href = 'https://www.ebay.com/sch/i.html?_nkw=' + encodeURIComponent(entry.oem) + '&LH_Sold=1&LH_Complete=1';
     resultPanel.classList.remove('hidden');
     resultPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
 
-  function lookup(rawCode) {
+  // ---- Automatic Ford lookup (FordPartsGiant, through a Netlify function) ----
+  let currentLookup = null;   // { pn, data, selected: Set of engines }
+  let lookupInFlight = null;
+
+  function cacheGet(pn) {
+    try {
+      const c = JSON.parse(localStorage.getItem('fpg:v1:' + pn));
+      if (c && Date.now() - c.t < 30 * 24 * 3600 * 1000) return c.data;
+    } catch (e) {}
+    return null;
+  }
+  function cacheSet(pn, data) {
+    try { localStorage.setItem('fpg:v1:' + pn, JSON.stringify({ t: Date.now(), data })); } catch (e) {}
+  }
+
+  function uniqueEngines(rows) {
+    const set = new Set();
+    rows.forEach(r => r.engines.forEach(e => set.add(e)));
+    return [...set].sort();
+  }
+
+  // Turn one-row-per-year into "Make Model 1982-1986" ranges
+  function groupFits(rows) {
+    const map = new Map();
+    rows.forEach(r => {
+      const k = r.make + '|' + r.model;
+      if (!map.has(k)) map.set(k, { make: r.make, model: r.model, years: new Set() });
+      map.get(k).years.add(r.year);
+    });
+    const fits = [];
+    [...map.values()]
+      .sort((a, b) => (a.make + ' ' + a.model).localeCompare(b.make + ' ' + b.model))
+      .forEach(g => {
+        const ys = [...g.years].sort((a, b) => a - b);
+        let start = ys[0], prev = ys[0];
+        for (let i = 1; i <= ys.length; i++) {
+          if (ys[i] === prev + 1) { prev = ys[i]; continue; }
+          fits.push({ make: g.make, model: g.model, years: start === prev ? String(start) : `${start}-${prev}` });
+          start = prev = ys[i];
+        }
+      });
+    return fits;
+  }
+
+  function buildEntry() {
+    const { pn, data, selected } = currentLookup;
+    const all = uniqueEngines(data.rows);
+    const rows = data.rows.filter(r => !r.engines.length || r.engines.some(e => selected.has(e)));
+    const engineLabel = all.length > 1 && selected.size < all.length ? ` (${[...selected].join(', ')})` : '';
+    return { name: data.name + engineLabel, oem: pn, fits: groupFits(rows) };
+  }
+
+  function renderNote() {
+    const { data } = currentLookup;
+    const box = document.getElementById('lookupNote');
+    box.innerHTML = '';
+    const add = (text, warn) => {
+      const d = document.createElement('div');
+      d.textContent = text;
+      if (warn) d.className = 'warn';
+      box.appendChild(d);
+    };
+    if (data.fallbackFrom) add(`${data.requested} isn't listed, so this shows fitment for ${data.fallbackFrom}. Only use it if your part is a variant of that part, like an oversize version.`, true);
+    if (data.redirectedTo) add(`FordPartsGiant sent this to ${data.redirectedTo}, which may be a replacement number. Double-check before listing.`, true);
+    if (data.replacedBy) add(`Replaced by ${data.replacedBy}.`, true);
+    add(`Source: FordPartsGiant${data.discontinued ? ' · discontinued (NOS)' : ''}. Their catalog isn't guaranteed, so give it a quick check.`);
+    if (/^https:\/\/www\.fordpartsgiant\.com\//.test(data.sourceUrl || '')) {
+      const a = document.createElement('a');
+      a.href = data.sourceUrl; a.target = '_blank'; a.rel = 'noopener';
+      a.textContent = 'View part page';
+      box.appendChild(a);
+    }
+    box.classList.remove('hidden');
+  }
+
+  function renderEngineFilter() {
+    const box = document.getElementById('engineFilter');
+    const engines = uniqueEngines(currentLookup.data.rows);
+    box.innerHTML = '';
+    if (engines.length < 2) { box.classList.add('hidden'); return; }
+    const intro = document.createElement('div');
+    intro.className = 'part-meta';
+    intro.textContent = 'Engines. For engine parts (valves, rings, gaskets), uncheck the engines this part doesn\u2019t fit:';
+    box.appendChild(intro);
+    engines.forEach(e => {
+      const label = document.createElement('label');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.value = e; cb.checked = currentLookup.selected.has(e);
+      cb.addEventListener('change', () => {
+        const checked = [...box.querySelectorAll('input:checked')].map(c => c.value);
+        if (!checked.length) { cb.checked = true; return; }  // keep at least one
+        currentLookup.selected = new Set(checked);
+        draftPanel.classList.add('hidden');                   // old draft no longer matches
+        renderFits(currentLookup.pn, buildEntry());
+      });
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(e));
+      box.appendChild(label);
+    });
+    box.classList.remove('hidden');
+  }
+
+  async function lookup(rawCode) {
     const key = normalize(rawCode);
-    showResult(rawCode, CATALOG[key] || null);
+    currentLookup = null;
+    document.getElementById('lookupNote').classList.add('hidden');
+    document.getElementById('engineFilter').classList.add('hidden');
+
+    if (CATALOG[key]) { showResult(rawCode, CATALOG[key]); return; }
+
+    const pn = window.WebcamScanner ? WebcamScanner.parseFordPartNumber(key).best : null;
+    if (!pn) { showResult(rawCode, null); return; }
+    if (lookupInFlight === pn) return;
+    lookupInFlight = pn;
+
+    resultPanel.classList.add('hidden');
+    draftPanel.classList.add('hidden');
+    setStatus(`Looking up ${pn} on FordPartsGiant…`);
+    try {
+      let data = cacheGet(pn);
+      if (!data) {
+        const resp = await fetch('/.netlify/functions/fpg-lookup?pn=' + encodeURIComponent(pn));
+        data = await resp.json();
+        if (data.found) cacheSet(pn, data);
+      }
+      if (!data.found) {
+        setStatus(data.error
+          ? `Lookup problem for ${pn}: ${data.error}`
+          : `${pn} isn't in FordPartsGiant's catalog. That's common for older NOS parts, so this one needs manual fitment for now.`, 'err');
+        return;
+      }
+      if (!data.rows || !data.rows.length) {
+        setStatus(`Found ${pn}, but its page has no fitment list.`, 'err');
+        return;
+      }
+      currentLookup = { pn, data, selected: new Set(uniqueEngines(data.rows)) };
+      showResult(pn, buildEntry());
+      renderNote();
+      renderEngineFilter();
+    } catch (e) {
+      setStatus('Could not reach the lookup. Check your connection and try again.', 'err');
+    } finally {
+      lookupInFlight = null;
+    }
   }
 
     document.getElementById('lookupBtn').addEventListener('click', () => {
@@ -329,7 +494,6 @@
       onConfirm: (partNumber) => {
         document.getElementById('manualInput').value = partNumber;
         lookup(partNumber);
-                   if (resultPanel.classList.contains('hidden')) scanStatus.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
     });
     labelBtn.textContent = 'Stop label reader';
