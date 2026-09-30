@@ -33,7 +33,7 @@ function expandYears(yearsStr) {
 exports.handler = async (event) => {
   let step = 'start';
   try {
-    const { sku, title, description, oem, price, fits, categoryId, brand } = JSON.parse(event.body || '{}');
+    const { sku, title, description, oem, price, fits, categoryId, brand, aspects: extraAspects } = JSON.parse(event.body || '{}');
     if (!sku || !title) return reply(400, { step, message: 'Missing sku or title.' });
 
     // Category chosen in the app for this part; falls back to the Netlify default
@@ -74,6 +74,15 @@ exports.handler = async (event) => {
     if (oem) {
       aspects['Manufacturer Part Number'] = [oem];
       aspects['OEM Part Number'] = [oem];
+    }
+    // Details the category requires (like Type), filled in on the app's screen
+    if (extraAspects && typeof extraAspects === 'object') {
+      Object.entries(extraAspects).slice(0, 40).forEach(([name, val]) => {
+        const key = String(name).trim().slice(0, 65);
+        const vals = (Array.isArray(val) ? val : [val])
+          .map(v => String(v).trim().slice(0, 65)).filter(Boolean).slice(0, 30);
+        if (key && vals.length && !aspects[key]) aspects[key] = vals;
+      });
     }
 
     step = 'inventory_item';
@@ -131,7 +140,8 @@ exports.handler = async (event) => {
 
     const offer = {
       sku,
-      marketplaceId: 'EBAY_US',
+      // Car parts are listed on the eBay Motors marketplace (their categories live there)
+      marketplaceId: process.env.EBAY_MARKETPLACE_ID || 'EBAY_MOTORS_US',
       format: 'FIXED_PRICE',
       listingDescription: description,
       availableQuantity: quantity,
