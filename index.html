@@ -102,6 +102,16 @@
   #engineFilter .part-meta { flex-basis: 100%; }
   #engineFilter label { display: flex; gap: 6px; align-items: center; font-size: 14px; cursor: pointer; }
 
+  /* Research links + manual fitment entry */
+  .research-links { display: flex; flex-wrap: wrap; gap: 8px; }
+  .research-links a { font-size: 13px; color: var(--text); background: var(--panel-2); border: 1px solid var(--line);
+                      border-radius: 6px; padding: 7px 10px; text-decoration: none; }
+  .research-links a:hover, .research-links a:focus-visible { border-color: var(--yellow); }
+  .manual-label { display: block; margin: 12px 0 6px; }
+  .manual-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+  .manual-grid input { min-width: 0; }
+  table.fit td .btn-copy { padding: 4px 8px; font-size: 12px; }
+
   @media (prefers-color-scheme: light) {
     :root:not([data-theme="dark"]) {
       --bg: #f4f1ea; --panel: #fff; --panel-2: #ece8df; --line: #d9d3c4; --text: #17181a; --muted: #6b6355;
@@ -156,6 +166,35 @@
       <div class="demo-codes" style="margin-top:8px;"><a id="soldLink" href="#" target="_blank" rel="noopener" style="color:var(--yellow);">Check sold prices on eBay</a></div>
     </div>
     <button class="btn-primary" id="draftBtn" style="margin-top:14px;">Generate eBay listing draft</button>
+  </div>
+
+  <div class="panel hidden" id="researchPanel">
+    <h2 id="researchTitle">Research this part</h2>
+    <div class="research-links" id="researchLinks"></div>
+    <button class="btn-ghost" id="manualOpenBtn">Enter fitment manually</button>
+  </div>
+
+  <div class="panel hidden" id="manualPanel">
+    <h2>Manual fitment for <span class="code-chip" id="manualPn"></span></h2>
+    <label class="part-meta manual-label" for="manualName">Part name (add the engine here for engine parts)</label>
+    <input type="text" id="manualName" placeholder="e.g. Intake Valve .015 Oversize 3.8L V6" autocomplete="off" style="width:100%;">
+    <div class="part-meta manual-label">Add a vehicle</div>
+    <div class="manual-grid">
+      <input type="text" id="mMake" list="makeList" placeholder="Make" value="Ford" autocomplete="off" aria-label="Make">
+      <input type="text" id="mModel" placeholder="Model" autocomplete="off" aria-label="Model">
+      <input type="text" id="mFrom" placeholder="From year" inputmode="numeric" autocomplete="off" aria-label="From year">
+      <input type="text" id="mTo" placeholder="To year (optional)" inputmode="numeric" autocomplete="off" aria-label="To year">
+    </div>
+    <datalist id="makeList"><option value="Ford"><option value="Mercury"><option value="Lincoln"><option value="Edsel"></datalist>
+    <button class="btn-copy" id="mAdd">Add vehicle</button>
+    <table class="fit">
+      <thead><tr><th>Make</th><th>Model</th><th>Years</th><th></th></tr></thead>
+      <tbody id="mBody"></tbody>
+    </table>
+    <div class="status" id="mStatus"></div>
+    <button class="btn-primary" id="mSave" style="margin-top:10px;">Save fitment</button>
+    <button class="btn-ghost" id="mCancel">Cancel</button>
+    <button class="btn-ghost hidden" id="mDelete">Delete saved fitment</button>
   </div>
 
   <div class="panel hidden" id="draftPanel">
@@ -386,16 +425,165 @@
     box.classList.remove('hidden');
   }
 
+  // ---- Research links + manual fitment (saved in this browser) ----
+  const researchPanel = document.getElementById('researchPanel');
+  const manualPanel = document.getElementById('manualPanel');
+  const mStatus = document.getElementById('mStatus');
+  let manualPn = null;
+  let manualRows = [];
+
+  function manualGet(pn) {
+    try { return JSON.parse(localStorage.getItem('manual:v1:' + pn)); } catch (e) { return null; }
+  }
+  function manualSet(pn, data) {
+    try { localStorage.setItem('manual:v1:' + pn, JSON.stringify(data)); return true; } catch (e) { return false; }
+  }
+
+  function hideExtras() {
+    researchPanel.classList.add('hidden');
+    manualPanel.classList.add('hidden');
+    document.getElementById('lookupNote').classList.add('hidden');
+    document.getElementById('engineFilter').classList.add('hidden');
+  }
+
+  function showResearch(pn, hasResult) {
+    const q = encodeURIComponent;
+    const flat = pn.replace(/-/g, '');
+    const links = [
+      ['Google', `https://www.google.com/search?q=${q('"' + pn + '"')}`],
+      ['Google (no dashes)', `https://www.google.com/search?q=${q('"' + flat + '"')}`],
+      ['eBay sold', `https://www.ebay.com/sch/i.html?_nkw=${q(pn)}&LH_Sold=1&LH_Complete=1`],
+      ['eBay for sale', `https://www.ebay.com/sch/i.html?_nkw=${q(pn)}`],
+      ['FordPartsGiant', `https://www.fordpartsgiant.com/parts/ford-x_${flat.toLowerCase()}.html`],
+      ['FordPartsWiki', `https://www.google.com/search?q=${q('site:fordpartswiki.com ' + pn)}`]
+    ];
+    const box = document.getElementById('researchLinks');
+    box.innerHTML = '';
+    links.forEach(([label, href]) => {
+      const a = document.createElement('a');
+      a.href = href; a.target = '_blank'; a.rel = 'noopener';
+      a.textContent = label;
+      box.appendChild(a);
+    });
+    document.getElementById('researchTitle').textContent = hasResult ? 'Double-check this part' : 'Research this part';
+    document.getElementById('manualOpenBtn').textContent = hasResult ? 'Edit fitment manually' : 'Enter fitment manually';
+    researchPanel.dataset.pn = pn;
+    researchPanel.classList.remove('hidden');
+  }
+
+  function showManualNote(saved) {
+    const box = document.getElementById('lookupNote');
+    box.innerHTML = '';
+    const d = document.createElement('div');
+    d.textContent = `Your saved manual fitment (stored in this browser on ${new Date(saved.savedAt).toLocaleDateString()}).`;
+    box.appendChild(d);
+    box.classList.remove('hidden');
+  }
+
+  function showSavedManual(pn, saved) {
+    currentLookup = null;
+    showResult(pn, { name: saved.name, oem: pn, fits: saved.fits });
+    showManualNote(saved);
+    showResearch(pn, true);
+  }
+
+  function renderManualRows() {
+    const body = document.getElementById('mBody');
+    body.innerHTML = '';
+    manualRows.forEach((r, i) => {
+      const tr = document.createElement('tr');
+      [r.make, r.model, r.years].forEach(v => {
+        const td = document.createElement('td');
+        td.textContent = v;
+        tr.appendChild(td);
+      });
+      const td = document.createElement('td');
+      const btn = document.createElement('button');
+      btn.className = 'btn-copy'; btn.type = 'button'; btn.textContent = 'Remove';
+      btn.addEventListener('click', () => { manualRows.splice(i, 1); renderManualRows(); });
+      td.appendChild(btn);
+      tr.appendChild(td);
+      body.appendChild(tr);
+    });
+  }
+
+  function mMsg(text, kind) {
+    mStatus.textContent = text;
+    mStatus.className = 'status' + (kind ? ' ' + kind : '');
+  }
+
+  function openManual(pn) {
+    manualPn = pn;
+    const saved = manualGet(pn);
+    let prefill = saved;
+    if (!prefill && resultPanel.dataset.code === pn && !resultPanel.classList.contains('hidden')) {
+      try { prefill = JSON.parse(resultPanel.dataset.entry); } catch (e) {}
+    }
+    document.getElementById('manualPn').textContent = pn;
+    document.getElementById('manualName').value = prefill ? prefill.name : '';
+    manualRows = prefill ? prefill.fits.map(f => ({ make: f.make, model: f.model, years: f.years })) : [];
+    renderManualRows();
+    mMsg('');
+    document.getElementById('mDelete').classList.toggle('hidden', !saved);
+    manualPanel.classList.remove('hidden');
+    manualPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    document.getElementById(prefill ? 'mModel' : 'manualName').focus();
+  }
+
+  function addManualRow() {
+    const make = document.getElementById('mMake').value.trim();
+    const model = document.getElementById('mModel').value.trim();
+    const from = document.getElementById('mFrom').value.trim();
+    const to = document.getElementById('mTo').value.trim() || from;
+    if (!make || !model) { mMsg('Enter a make and a model.', 'err'); return; }
+    if (!/^(19|20)\d\d$/.test(from) || !/^(19|20)\d\d$/.test(to) || Number(to) < Number(from)) {
+      mMsg('Years should look like 1985, and the "to" year can\u2019t be before the "from" year.', 'err');
+      return;
+    }
+    manualRows.push({ make, model, years: from === to ? from : `${from}-${to}` });
+    ['mModel', 'mFrom', 'mTo'].forEach(id => { document.getElementById(id).value = ''; });
+    document.getElementById('mModel').focus();
+    renderManualRows();
+    mMsg('');
+  }
+
+  document.getElementById('manualOpenBtn').addEventListener('click', () => openManual(researchPanel.dataset.pn));
+  document.getElementById('mAdd').addEventListener('click', addManualRow);
+  ['mMake', 'mModel', 'mFrom', 'mTo'].forEach(id => {
+    document.getElementById(id).addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); addManualRow(); }
+    });
+  });
+  document.getElementById('mCancel').addEventListener('click', () => manualPanel.classList.add('hidden'));
+  document.getElementById('mSave').addEventListener('click', () => {
+    const name = document.getElementById('manualName').value.trim();
+    if (!name) { mMsg('Give the part a name first.', 'err'); return; }
+    if (!manualRows.length) { mMsg('Add at least one vehicle first.', 'err'); return; }
+    const saved = { name, fits: manualRows.slice(), savedAt: Date.now() };
+    if (!manualSet(manualPn, saved)) { mMsg('Could not save. Your browser may be blocking storage for this site.', 'err'); return; }
+    manualPanel.classList.add('hidden');
+    showSavedManual(manualPn, saved);
+  });
+  document.getElementById('mDelete').addEventListener('click', () => {
+    if (!confirm(`Delete your saved fitment for ${manualPn}?`)) return;
+    try { localStorage.removeItem('manual:v1:' + manualPn); } catch (e) {}
+    manualPanel.classList.add('hidden');
+    lookup(manualPn);
+  });
+
   async function lookup(rawCode) {
     const key = normalize(rawCode);
     currentLookup = null;
-    document.getElementById('lookupNote').classList.add('hidden');
-    document.getElementById('engineFilter').classList.add('hidden');
+    hideExtras();
 
     if (CATALOG[key]) { showResult(rawCode, CATALOG[key]); return; }
 
     const pn = window.WebcamScanner ? WebcamScanner.parseFordPartNumber(key).best : null;
     if (!pn) { showResult(rawCode, null); return; }
+
+    const saved = manualGet(pn);
+    if (saved) { showSavedManual(pn, saved); return; }
+
     if (lookupInFlight === pn) return;
     lookupInFlight = pn;
 
@@ -412,19 +600,23 @@
       if (!data.found) {
         setStatus(data.error
           ? `Lookup problem for ${pn}: ${data.error}`
-          : `${pn} isn't in FordPartsGiant's catalog. That's common for older NOS parts, so this one needs manual fitment for now.`, 'err');
+          : `${pn} isn't in FordPartsGiant's catalog. That's common for older NOS parts. Use the research links below, then enter the fitment manually.`, 'err');
+        showResearch(pn, false);
         return;
       }
       if (!data.rows || !data.rows.length) {
-        setStatus(`Found ${pn}, but its page has no fitment list.`, 'err');
+        setStatus(`Found ${pn}, but its page has no fitment list. Use the research links below.`, 'err');
+        showResearch(pn, false);
         return;
       }
       currentLookup = { pn, data, selected: new Set(uniqueEngines(data.rows)) };
       showResult(pn, buildEntry());
       renderNote();
       renderEngineFilter();
+      showResearch(pn, true);
     } catch (e) {
       setStatus('Could not reach the lookup. Check your connection and try again.', 'err');
+      showResearch(pn, false);
     } finally {
       lookupInFlight = null;
     }
