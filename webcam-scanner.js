@@ -115,8 +115,7 @@
   /* ---------------- Scanner UI ---------------- */
 
   const GUIDE = { x: 0.10, y: 0.35, w: 0.80, h: 0.30 }; // must match .ws-guide in CSS
-  const MOTION = 12, STILL = 3, STILL_FRAMES = 5;     // auto-capture tuning (0-255 brightness scale)
-
+  const MOTION = 6, STILL = 4, STILL_FRAMES = 4;      // auto-capture tuning (0-255 brightness scale)
   let workerPromise = null;
   function getWorker() {
     if (!workerPromise) {
@@ -294,7 +293,8 @@
     // Auto-capture: after movement, wait for the scene to hold still, then read once.
     function watch() {
       if (!autoBox.checked || busy || !resultEl.hidden || !video.videoWidth) return;
-      smallCtx.drawImage(video, 0, 0, small.width, small.height);
+              const vw = video.videoWidth, vh = video.videoHeight;
+         smallCtx.drawImage(video, vw * GUIDE.x, vh * GUIDE.y, vw * GUIDE.w, vh * GUIDE.h, 0, 0, small.width, small.height);
       const d = smallCtx.getImageData(0, 0, small.width, small.height).data;
       const frame = new Uint8Array(d.length / 4);
       for (let i = 0, j = 0; i < d.length; i += 4, j++) frame[j] = (d[i] + d[i + 1] + d[i + 2]) / 3;
