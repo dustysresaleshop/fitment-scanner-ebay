@@ -148,8 +148,9 @@ exports.handler = async (event) => {
 
     const offer = {
       sku,
-      // Parts & Accessories are listed on EBAY_US with an eBay Motors category
-      marketplaceId: process.env.EBAY_MARKETPLACE_ID || 'EBAY_US',
+      // Car parts use eBay Motors categories, which only exist on the eBay Motors
+      // marketplace. (In this API its code is EBAY_MOTORS.)
+      marketplaceId: process.env.EBAY_MARKETPLACE_ID || 'EBAY_MOTORS',
       format: 'FIXED_PRICE',
       listingDescription: description,
       availableQuantity: quantity,
