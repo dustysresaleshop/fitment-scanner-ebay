@@ -116,6 +116,7 @@
 
   const GUIDE = { x: 0.10, y: 0.35, w: 0.80, h: 0.30 }; // must match .ws-guide in CSS
   const MOTION = 6, STILL = 4, STILL_FRAMES = 4;      // auto-capture tuning (0-255 brightness scale)
+
   let workerPromise = null;
   function getWorker() {
     if (!workerPromise) {
@@ -173,6 +174,7 @@
 
     let stream = null, busy = false, lastInfo = null, timer = null;
     let prevFrame = null, sawMotion = true, stillCount = 0;
+    let autoPaused = false;
     const small = document.createElement('canvas');
     small.width = 64; small.height = 36;
     const smallCtx = small.getContext('2d', { willReadFrequently: true });
@@ -292,9 +294,9 @@
 
     // Auto-capture: after movement, wait for the scene to hold still, then read once.
     function watch() {
-      if (!autoBox.checked || busy || !resultEl.hidden || !video.videoWidth) return;
-              const vw = video.videoWidth, vh = video.videoHeight;
-         smallCtx.drawImage(video, vw * GUIDE.x, vh * GUIDE.y, vw * GUIDE.w, vh * GUIDE.h, 0, 0, small.width, small.height);
+      if (autoPaused || !autoBox.checked || busy || !resultEl.hidden || !video.videoWidth) return;
+      const vw = video.videoWidth, vh = video.videoHeight;
+      smallCtx.drawImage(video, vw * GUIDE.x, vh * GUIDE.y, vw * GUIDE.w, vh * GUIDE.h, 0, 0, small.width, small.height);
       const d = smallCtx.getImageData(0, 0, small.width, small.height).data;
       const frame = new Uint8Array(d.length / 4);
       for (let i = 0, j = 0; i < d.length; i += 4, j++) frame[j] = (d[i] + d[i + 1] + d[i + 2]) / 3;
@@ -323,8 +325,30 @@
     getWorker();                                          // start downloading the reader right away
     timer = setInterval(watch, 200);
 
+    // Full-frame photo for listings, scaled so the longest side is at most maxSide
+    function snapshot(maxSide = 1600, quality = 0.88) {
+      const vw = video.videoWidth, vh = video.videoHeight;
+      if (!vw || !vh) return null;
+      const scale = Math.min(1, maxSide / Math.max(vw, vh));
+      const c = document.createElement('canvas');
+      c.width = Math.round(vw * scale);
+      c.height = Math.round(vh * scale);
+      c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
+      return c.toDataURL('image/jpeg', quality);
+    }
+
+    function pauseAuto(paused) {
+      autoPaused = !!paused;
+      sawMotion = false; stillCount = 0;
+      setStatus(autoPaused
+        ? 'Photo mode: automatic label reading is paused'
+        : (autoBox.checked ? 'Set a box under the camera' : 'Line up the part number in the yellow box'));
+    }
+
     return {
       read: () => read(false),
+      snapshot,
+      pauseAuto,
       destroy() {
         clearInterval(timer);
         if (stream) stream.getTracks().forEach(t => t.stop());
