@@ -329,6 +329,7 @@
       onConfirm: (partNumber) => {
         document.getElementById('manualInput').value = partNumber;
         lookup(partNumber);
+                   if (resultPanel.classList.contains('hidden')) scanStatus.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
     });
     labelBtn.textContent = 'Stop label reader';
