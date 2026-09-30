@@ -1,5 +1,5 @@
 // netlify/functions/ebay-category.js
-// Suggests eBay categories for a part name. Use: /.netlify/functions/ebay-category?q=intake%20valve
+// Suggests eBay Motors categories for a part name. Use: /.netlify/functions/ebay-category?q=intake%20valve
 const { tokenUrl, apiBase } = require('./utils/ebay-auth');
 
 const reply = (statusCode, obj, cache) => ({
@@ -26,31 +26,89 @@ async function appToken() {
   return cached.token;
 }
 
+async function suggest(token, q) {
+  const resp = await fetch(`${apiBase()}/commerce/taxonomy/v1/category_tree/0/get_category_suggestions?q=${encodeURIComponent(q)}`, {
+    headers: { Authorization: `Bearer ${token}`, 'Accept-Language': 'en-US' }
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    const msg = (data.errors || []).map(e => `${e.errorId} ${e.message}`).join(' | ') || resp.status;
+    throw new Error('Category search failed: ' + msg);
+  }
+  return (data.categorySuggestions || []).map(s => {
+    const ancestors = (s.categoryTreeNodeAncestors || []).slice().reverse().map(a => a.categoryName);
+    return {
+      id: s.category.categoryId,
+      name: s.category.categoryName,
+      path: [...ancestors, s.category.categoryName].join(' > ')
+    };
+  });
+}
+
+const isMotors = c => /^eBay Motors/i.test(c.path);
+
+// Required item details ("aspects") for a category, e.g. Type
+async function requiredAspects(token, categoryId) {
+  const resp = await fetch(`${apiBase()}/commerce/taxonomy/v1/category_tree/0/get_item_aspects_for_category?category_id=${categoryId}`, {
+    headers: { Authorization: `Bearer ${token}`, 'Accept-Language': 'en-US' }
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    const msg = (data.errors || []).map(e => `${e.errorId} ${e.message}`).join(' | ') || resp.status;
+    throw new Error('Could not load required details: ' + msg);
+  }
+  return (data.aspects || [])
+    .filter(a => a.aspectConstraint && a.aspectConstraint.aspectRequired)
+    .map(a => ({
+      name: a.localizedAspectName,
+      mode: a.aspectConstraint.aspectMode,
+      multi: a.aspectConstraint.itemToAspectCardinality === 'MULTI',
+      values: (a.aspectValues || []).map(v => v.localizedValue).slice(0, 300)
+    }));
+}
+
 exports.handler = async (event) => {
-  const q = String((event.queryStringParameters || {}).q || '').trim().slice(0, 100);
+  const qs = event.queryStringParameters || {};
+  if (qs.aspects) {
+    if (!/^\d+$/.test(qs.aspects)) return reply(400, { error: 'Bad category ID' });
+    try {
+      const token = await appToken();
+      return reply(200, { categoryId: qs.aspects, aspects: await requiredAspects(token, qs.aspects) }, true);
+    } catch (e) {
+      return reply(500, { error: e.message });
+    }
+  }
+
+  const q = String(qs.q || '').trim().slice(0, 100);
   if (!q) return reply(400, { error: 'Add ?q= with a part name' });
   try {
     const token = await appToken();
-    const resp = await fetch(`${apiBase()}/commerce/taxonomy/v1/category_tree/0/get_category_suggestions?q=${encodeURIComponent(q)}`, {
-      headers: { Authorization: `Bearer ${token}`, 'Accept-Language': 'en-US' }
-    });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) {
-      const msg = (data.errors || []).map(e => `${e.errorId} ${e.message}`).join(' | ') || resp.status;
-      return reply(resp.status, { error: 'Category search failed: ' + msg });
+
+    // "Ford" steers eBay toward car parts instead of plumbing, home, etc.
+    const steered = /\bford\b/i.test(q) ? q : `Ford ${q}`;
+    let all = await suggest(token, steered);
+    let motors = all.filter(isMotors);
+
+    if (!motors.length && steered !== q) {
+      const plain = await suggest(token, q);
+      all = all.concat(plain);
+      motors = plain.filter(isMotors);
     }
-    const suggestions = (data.categorySuggestions || []).map(s => {
-      const ancestors = (s.categoryTreeNodeAncestors || []).slice().reverse().map(a => a.categoryName);
-      return {
-        id: s.category.categoryId,
-        name: s.category.categoryName,
-        path: [...ancestors, s.category.categoryName].join(' > ')
-      };
+
+    if (motors.length) {
+      return reply(200, { query: q, motorsOnly: true, suggestions: motors.slice(0, 8) }, true);
+    }
+    // Nothing car-related: return no picks, so the app asks for a better search
+    // instead of quietly choosing a non-car category
+    return reply(200, {
+      query: q,
+      motorsOnly: false,
+      warning: 'No eBay Motors categories matched. Try a different search, like "engine valve" or "piston rings".',
+      suggestions: [],
+      otherCategories: all.slice(0, 5)
     });
-    // Car parts belong under eBay Motors, so list those first
-    suggestions.sort((a, b) => (b.path.startsWith('eBay Motors') ? 1 : 0) - (a.path.startsWith('eBay Motors') ? 1 : 0));
-    return reply(200, { query: q, suggestions: suggestions.slice(0, 8) }, true);
   } catch (e) {
     return reply(500, { error: e.message });
   }
 };
+
