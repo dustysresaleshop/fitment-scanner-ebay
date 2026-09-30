@@ -36,6 +36,8 @@ exports.handler = async (event) => {
     const { sku, title, description, oem, price, fits, categoryId, brand, aspects: extraAspects } = JSON.parse(event.body || '{}');
     if (!sku || !title) return reply(400, { step, message: 'Missing sku or title.' });
 
+    const locationKey = process.env.EBAY_MERCHANT_LOCATION_KEY || 'main-warehouse';
+
     // Category chosen in the app for this part; falls back to the Netlify default
     const category = /^\d+$/.test(String(categoryId || ''))
       ? String(categoryId)
@@ -96,7 +98,13 @@ exports.handler = async (event) => {
           aspects
         },
         condition: 'NEW',
-        availability: { shipToLocationAvailability: { quantity } }
+        // Tie the quantity to the storage location, which eBay's inventory service requires
+        availability: {
+          shipToLocationAvailability: {
+            quantity,
+            availabilityDistributions: [{ merchantLocationKey: locationKey, quantity }]
+          }
+        }
       })
     });
     if (!itemResp.ok && itemResp.status !== 204) {
@@ -147,7 +155,7 @@ exports.handler = async (event) => {
       availableQuantity: quantity,
       categoryId: category,
       pricingSummary: { price: { value: price || '19.99', currency: 'USD' } },
-      merchantLocationKey: process.env.EBAY_MERCHANT_LOCATION_KEY || 'main-warehouse'
+      merchantLocationKey: locationKey
     };
     if (Object.keys(policies).length) offer.listingPolicies = policies;
 
