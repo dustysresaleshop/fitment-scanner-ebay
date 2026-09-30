@@ -4,6 +4,8 @@
 // most car-part categories. This is read-only and doesn't touch your listings.
 const { getAppAccessToken } = require('./utils/ebay-auth');
 const TAXONOMY_BASE = 'https://api.ebay.com';
+// eBay Motors (car parts) has its own category list, separate from the main eBay list
+const MOTORS_TREE = '100';
 
 const reply = (statusCode, obj, cache) => ({
   statusCode,
@@ -21,7 +23,7 @@ async function appToken() {
 }
 
 async function suggest(token, q) {
-  const resp = await fetch(`${TAXONOMY_BASE}/commerce/taxonomy/v1/category_tree/0/get_category_suggestions?q=${encodeURIComponent(q)}`, {
+  const resp = await fetch(`${TAXONOMY_BASE}/commerce/taxonomy/v1/category_tree/${MOTORS_TREE}/get_category_suggestions?q=${encodeURIComponent(q)}`, {
     headers: { Authorization: `Bearer ${token}`, 'Accept-Language': 'en-US' }
   });
   const data = await resp.json().catch(() => ({}));
@@ -31,19 +33,21 @@ async function suggest(token, q) {
   }
   return (data.categorySuggestions || []).map(s => {
     const ancestors = (s.categoryTreeNodeAncestors || []).slice().reverse().map(a => a.categoryName);
+    const parts = [...ancestors, s.category.categoryName];
+    if (!/^eBay Motors/i.test(parts[0] || '')) parts.unshift('eBay Motors');
     return {
       id: s.category.categoryId,
       name: s.category.categoryName,
-      path: [...ancestors, s.category.categoryName].join(' > ')
+      path: parts.join(' > ')
     };
   });
 }
 
-const isMotors = c => /^eBay Motors/i.test(c.path);
+const isMotors = c => /^eBay Motors/i.test(c.path) && /Parts & Accessories/i.test(c.path);
 
 // Required item details ("aspects") for a category, e.g. Type
 async function requiredAspects(token, categoryId) {
-  const resp = await fetch(`${TAXONOMY_BASE}/commerce/taxonomy/v1/category_tree/0/get_item_aspects_for_category?category_id=${categoryId}`, {
+  const resp = await fetch(`${TAXONOMY_BASE}/commerce/taxonomy/v1/category_tree/${MOTORS_TREE}/get_item_aspects_for_category?category_id=${categoryId}`, {
     headers: { Authorization: `Bearer ${token}`, 'Accept-Language': 'en-US' }
   });
   const data = await resp.json().catch(() => ({}));
