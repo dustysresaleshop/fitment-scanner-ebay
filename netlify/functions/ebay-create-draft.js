@@ -1,3 +1,6 @@
+// netlify/functions/ebay-upload-image.js
+// Uploads one listing photo to eBay Picture Services and returns its eBay image URL.
+// Body: { "image": "data:image/jpeg;base64,..." }
 const { getAccessToken, apiBase } = require('./utils/ebay-auth');
 
 const reply = (statusCode, obj) => ({
@@ -9,189 +12,53 @@ const reply = (statusCode, obj) => ({
 function summarize(text) {
   try {
     const d = JSON.parse(text);
-    if (d.errors && d.errors.length) {
-      return d.errors.map(e => {
-        const params = (e.parameters || []).map(p => `${p.name}=${p.value}`).join(', ');
-        return `${e.errorId || ''} ${e.message || ''}${params ? ' [' + params + ']' : ''}`.trim();
-      }).join(' | ');
-    }
+    if (d.errors && d.errors.length) return d.errors.map(e => `${e.errorId || ''} ${e.message || ''}`.trim()).join(' | ');
   } catch (e) {}
   return String(text).slice(0, 300);
 }
 
-// Turns "1992-1995" or "1995" into [1992,1993,1994,1995] or [1995].
-// eBay's vehicle filter matches on individual years, not ranges.
-function expandYears(yearsStr) {
-  const parts = String(yearsStr).split(/[\u2013-]/).map(s => s.trim());
-  const start = parseInt(parts[0], 10);
-  const end = parts.length > 1 ? parseInt(parts[1], 10) : start;
-  const years = [];
-  for (let y = start; y <= end; y++) years.push(y);
-  return years;
-}
-
 exports.handler = async (event) => {
+  if (event.httpMethod !== 'POST') return reply(405, { message: 'Use POST.' });
   let step = 'start';
   try {
-    const { sku, title, description, oem, price, fits, categoryId, brand, aspects: extraAspects } = JSON.parse(event.body || '{}');
-    if (!sku || !title) return reply(400, { step, message: 'Missing sku or title.' });
-
-    const locationKey = process.env.EBAY_MERCHANT_LOCATION_KEY || 'main-warehouse';
-
-    // Category chosen in the app for this part; falls back to the Netlify default
-    const category = /^\d+$/.test(String(categoryId || ''))
-      ? String(categoryId)
-      : (process.env.EBAY_DEFAULT_CATEGORY_ID || '33564');
+    const { image } = JSON.parse(event.body || '{}');
+    const m = /^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$/.exec(String(image || ''));
+    if (!m) return reply(400, { message: 'Send a JPEG, PNG, or WebP image.' });
+    const buf = Buffer.from(m[2], 'base64');
+    if (buf.length < 1000) return reply(400, { message: 'That image looks empty.' });
 
     step = 'token';
-    const accessToken = await getAccessToken();
-    const base = apiBase();
-    const headers = {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Language': 'en-US',
-      'Accept-Language': 'en-US'
-    };
+    const token = await getAccessToken();
+    const mediaBase = /sandbox/i.test(apiBase()) ? 'https://apim.sandbox.ebay.com' : 'https://apim.ebay.com';
 
-    // Check how many of this part are already listed, so a repeat scan adds
-    // to the count instead of resetting it back to 1 each time.
-    step = 'check_quantity';
-    let quantity = 1;
-    const existingItemResp = await fetch(`${base}/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}`, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${accessToken}`, 'Accept-Language': 'en-US' }
-    });
-    if (existingItemResp.ok) {
-      const existingItem = await existingItemResp.json();
-      const currentQty = existingItem.availability && existingItem.availability.shipToLocationAvailability
-        ? existingItem.availability.shipToLocationAvailability.quantity
-        : 0;
-      quantity = (currentQty || 0) + 1;
-    }
-    // A 404 here just means this part has never been scanned before, so it
-    // starts at quantity 1, which is already the default above.
-
-    // Item specifics most parts categories require
-    const aspects = { Brand: [String(brand || 'Ford').slice(0, 65)] };
-    if (oem) {
-      aspects['Manufacturer Part Number'] = [oem];
-      aspects['OEM Part Number'] = [oem];
-    }
-    // Details the category requires (like Type), filled in on the app's screen
-    if (extraAspects && typeof extraAspects === 'object') {
-      Object.entries(extraAspects).slice(0, 40).forEach(([name, val]) => {
-        const key = String(name).trim().slice(0, 65);
-        const vals = (Array.isArray(val) ? val : [val])
-          .map(v => String(v).trim().slice(0, 65)).filter(Boolean).slice(0, 30);
-        if (key && vals.length && !aspects[key]) aspects[key] = vals;
-      });
-    }
-
-    step = 'inventory_item';
-    const itemResp = await fetch(`${base}/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}`, {
-      method: 'PUT',
-      headers,
-      body: JSON.stringify({
-        product: {
-          title: title.slice(0, 80),
-          description,
-          aspects
-        },
-        condition: 'NEW',
-        // Tie the quantity to the storage location, which eBay's inventory service requires
-        availability: {
-          shipToLocationAvailability: {
-            quantity,
-            availabilityDistributions: [{ merchantLocationKey: locationKey, quantity }]
-          }
-        }
-      })
-    });
-    if (!itemResp.ok && itemResp.status !== 204) {
-      return reply(itemResp.status, { step, message: summarize(await itemResp.text()) });
-    }
-
-    // Send the vehicle list in eBay's own format, so a buyer filtering by
-    // their vehicle on eBay Motors will actually find this part.
-    // eBay's field is "compatibleProducts", and its property names are
-    // lowercase ("make"/"model"/"year") -- confirmed via a live test call.
-    if (Array.isArray(fits) && fits.length) {
-      step = 'compatibility';
-      const compatibleProducts = [];
-      fits.forEach(f => {
-        expandYears(f.years).forEach(year => {
-          compatibleProducts.push({
-            compatibilityProperties: [
-              { name: 'make', value: f.make },
-              { name: 'model', value: f.model },
-              { name: 'year', value: String(year) }
-            ]
-          });
-        });
-      });
-
-      const compResp = await fetch(`${base}/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}/product_compatibility`, {
-        method: 'PUT',
-        headers,
-        body: JSON.stringify({ sku, compatibleProducts })
-      });
-      if (!compResp.ok && compResp.status !== 204) {
-        return reply(compResp.status, { step, message: summarize(await compResp.text()) });
-      }
-    }
-
-    step = 'offer';
-    const policies = {};
-    if (process.env.EBAY_FULFILLMENT_POLICY_ID) policies.fulfillmentPolicyId = process.env.EBAY_FULFILLMENT_POLICY_ID;
-    if (process.env.EBAY_PAYMENT_POLICY_ID) policies.paymentPolicyId = process.env.EBAY_PAYMENT_POLICY_ID;
-    if (process.env.EBAY_RETURN_POLICY_ID) policies.returnPolicyId = process.env.EBAY_RETURN_POLICY_ID;
-
-    const offer = {
-      sku,
-      // Car parts use eBay Motors categories, which only exist on the eBay Motors
-      // marketplace. (In this API its code is EBAY_MOTORS.)
-      marketplaceId: process.env.EBAY_MARKETPLACE_ID || 'EBAY_MOTORS',
-      format: 'FIXED_PRICE',
-      listingDescription: description,
-      availableQuantity: quantity,
-      categoryId: category,
-      pricingSummary: { price: { value: price || '19.99', currency: 'USD' } },
-      merchantLocationKey: locationKey
-    };
-    if (Object.keys(policies).length) offer.listingPolicies = policies;
-
-    const offerResp = await fetch(`${base}/sell/inventory/v1/offer`, {
+    step = 'upload';
+    const ext = m[1] === 'jpeg' ? 'jpg' : m[1];
+    const form = new FormData();
+    form.append('image', new Blob([buf], { type: `image/${m[1]}` }), `photo.${ext}`);
+    const resp = await fetch(`${mediaBase}/commerce/media/v1_beta/image/create_image_from_file`, {
       method: 'POST',
-      headers,
-      body: JSON.stringify(offer)
+      headers: { Authorization: `Bearer ${token}` },
+      body: form
     });
-    const offerText = await offerResp.text();
+    const text = await resp.text();
+    if (!resp.ok) return reply(resp.status, { step, message: summarize(text) });
 
-    if (!offerResp.ok) {
-      let existingId;
-      try {
-        const d = JSON.parse(offerText);
-        const err = (d.errors || []).find(e => e.errorId === 25002);
-        const p = err && (err.parameters || []).find(x => x.name === 'offerId');
-        existingId = p && p.value;
-      } catch (e) {}
-      if (existingId) {
-        const upd = await fetch(`${base}/sell/inventory/v1/offer/${existingId}`, {
-          method: 'PUT',
-          headers,
-          body: JSON.stringify(offer)
-        });
-        if (upd.ok || upd.status === 204) {
-          return reply(200, { message: `Existing draft updated on eBay. Quantity is now ${quantity}.`, offerId: existingId });
-        }
-        return reply(upd.status, { step: 'offer_update', message: summarize(await upd.text()) });
+    let data = {};
+    try { data = JSON.parse(text); } catch (e) {}
+    let imageUrl = data.imageUrl;
+
+    // Some responses only give the image's address in the Location header
+    if (!imageUrl) {
+      step = 'get_image';
+      const loc = resp.headers.get('location');
+      if (loc) {
+        const g = await fetch(loc, { headers: { Authorization: `Bearer ${token}` } });
+        const gd = await g.json().catch(() => ({}));
+        imageUrl = gd.imageUrl;
       }
-      return reply(offerResp.status, { step, message: summarize(offerText) });
     }
-
-    let offerData = {};
-    try { offerData = JSON.parse(offerText); } catch (e) {}
-    return reply(200, { message: `Draft created on eBay. Quantity is ${quantity}.`, offerId: offerData.offerId });
+    if (!imageUrl) return reply(502, { step, message: 'eBay did not return an image link.' });
+    return reply(200, { imageUrl, expirationDate: data.expirationDate || null });
   } catch (err) {
     return reply(500, { step, message: err.message });
   }
