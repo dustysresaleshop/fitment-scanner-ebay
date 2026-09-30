@@ -2,6 +2,8 @@
 // Setup tool for eBay business policies (shipping, payment, returns).
 //   /.netlify/functions/ebay-policies            -> checks access and lists your policies
 //   /.netlify/functions/ebay-policies?create=1   -> creates a working test set
+//   /.netlify/functions/ebay-policies?location=create&zip=12345&city=Town&state=OH
+//                                                -> creates the item location your listings use
 // Delete this file once your policies are set up.
 const { tokenUrl, apiBase } = require('./utils/ebay-auth');
 
@@ -98,9 +100,43 @@ exports.handler = async (event) => {
       ? (programs.data.programs || []).map(p => p.programType)
       : 'Error: ' + errText(programs);
 
-    if ((event.queryStringParameters || {}).create !== '1') {
+    const qs = event.queryStringParameters || {};
+    const locationKey = process.env.EBAY_MERCHANT_LOCATION_KEY || 'main-warehouse';
+
+    if (qs.location === 'create') {
+      step = 'create_location';
+      const zip = String(qs.zip || '').trim(), city = String(qs.city || '').trim(), state = String(qs.state || '').trim().toUpperCase();
+      if (!/^\d{5}$/.test(zip) || !city || !/^[A-Z]{2}$/.test(state)) {
+        return reply(400, { message: 'Add your ZIP, city, and 2-letter state, like ?location=create&zip=12345&city=Yourtown&state=OH' });
+      }
+      const loc = await call(base, t.token, 'POST', `/sell/inventory/v1/location/${encodeURIComponent(locationKey)}`, {
+        location: { address: { city, stateOrProvince: state, postalCode: zip, country: 'US' } },
+        locationTypes: ['WAREHOUSE'],
+        name: 'Main warehouse',
+        merchantLocationStatus: 'ENABLED'
+      });
+      return reply(200, {
+        environment: sandbox ? 'sandbox' : 'production',
+        locationKey,
+        result: (loc.ok || loc.status === 204) ? 'OK: location created' : 'Response: ' + errText(loc)
+      });
+    }
+
+    if (qs.create !== '1') {
       step = 'list';
-      return reply(200, { environment: sandbox ? 'sandbox' : 'production', diagnostics, currentNetlifySettings: env, policies: await listPolicies(base, t.token) });
+      const locs = await call(base, t.token, 'GET', '/sell/inventory/v1/location?limit=100');
+      const locationKeys = locs.ok ? (locs.data.locations || []).map(l => l.merchantLocationKey) : 'Error: ' + errText(locs);
+      return reply(200, {
+        environment: sandbox ? 'sandbox' : 'production',
+        diagnostics,
+        currentNetlifySettings: env,
+        policies: await listPolicies(base, t.token),
+        itemLocation: {
+          listingsUse: locationKey,
+          existsOnAccount: Array.isArray(locationKeys) ? locationKeys.includes(locationKey) : 'unknown',
+          allLocations: locationKeys
+        }
+      });
     }
 
     const categoryTypes = [{ name: 'ALL_EXCLUDING_MOTORS_VEHICLES' }];
