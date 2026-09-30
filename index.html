@@ -118,6 +118,10 @@
   .box-buttons { display: flex; gap: 8px; }
 
   /* eBay category picker */
+  .aspect-intro { margin-top: 12px; font-size: 12px; color: var(--muted); }
+  .aspect-row { margin-top: 8px; }
+  .aspect-row label { display: block; font-size: 13px; margin-bottom: 4px; }
+  .aspect-row input[type="text"] { width: 100%; }
   .cat-select { width: 100%; background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
                 border-radius: 8px; padding: 10px; font-family: inherit; font-size: 14px; }
 
@@ -191,6 +195,7 @@
         <button class="btn-copy" id="catSearchBtn">Search</button>
       </div>
       <div class="status" id="catStatus"></div>
+      <div id="aspectBox"></div>
     </div>
     <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line);">
       <div class="part-meta" style="margin-bottom:8px;">Your price (USD)</div>
@@ -879,11 +884,13 @@
   }
 
   async function loadCategories(query, oem) {
-    const saved = oem ? catFor(oem) : null;
+    let saved = oem ? catFor(oem) : null;
+    if (saved && !/^eBay Motors/i.test(saved.path || '')) saved = null;   // ignore old non-car picks
     const q = String(query || '').replace(/\(.*?\)/g, '').trim();
     document.getElementById('catSearch').value = q;
     const reqId = ++catRequest;
     fillCategories(saved ? [saved] : [], saved && saved.id);
+    loadAspects(saved ? saved.id : '');
     if (!q) { catMsg(saved ? '' : 'Search for a category below.'); return; }
     catMsg('Finding eBay categories\u2026');
     try {
@@ -896,10 +903,115 @@
       if (!list.length) { catMsg('No categories found. Try a different search below.', 'err'); return; }
       fillCategories(list, saved ? saved.id : list[0].id);
       catMsg(saved ? 'Using the category you picked for this part before.' : 'Top match picked. Change it if it doesn\u2019t fit.');
+      loadAspects(catSelect.value);
     } catch (e) {
       if (reqId === catRequest) catMsg('Could not reach the category search.', 'err');
     }
   }
+
+  // ---- Required item details for the chosen category (e.g. Type) ----
+  const AUTO_ASPECTS = ['Brand', 'Manufacturer Part Number', 'OEM Part Number'];
+  let aspectRequest = 0;
+  let currentAspects = [];
+  let loadedAspectCat = '';
+
+  function aspectMemGet(key) {
+    try { return JSON.parse(localStorage.getItem('aspects:v1:' + key)) || {}; } catch (e) { return {}; }
+  }
+  function aspectMemSet(key, obj) {
+    try { localStorage.setItem('aspects:v1:' + key, JSON.stringify(obj)); } catch (e) {}
+  }
+  function currentPartName() {
+    try { return JSON.parse(resultPanel.dataset.entry).name || ''; } catch (e) { return ''; }
+  }
+
+  // Pick the value that appears in the part name, e.g. "Intake Valve"
+  function guessValue(values, name) {
+    const n = name.toLowerCase();
+    let best = '';
+    values.forEach(v => { if (v && n.includes(v.toLowerCase()) && v.length > best.length) best = v; });
+    return best;
+  }
+
+  async function loadAspects(categoryId) {
+    const box = document.getElementById('aspectBox');
+    const reqId = ++aspectRequest;
+    box.innerHTML = '';
+    currentAspects = [];
+    loadedAspectCat = '';
+    if (!categoryId) return;
+    try {
+      const resp = await fetch('/.netlify/functions/ebay-category?aspects=' + encodeURIComponent(categoryId));
+      const data = await resp.json();
+      if (reqId !== aspectRequest) return;
+      if (!resp.ok) { loadedAspectCat = categoryId; catMsg(data.error || 'Could not load the details eBay requires.', 'err'); return; }
+      currentAspects = (data.aspects || []).filter(a => !AUTO_ASPECTS.includes(a.name));
+      loadedAspectCat = categoryId;
+      if (!currentAspects.length) return;
+
+      const oem = resultPanel.dataset.code || '';
+      const remembered = Object.assign({}, aspectMemGet('cat:' + categoryId), aspectMemGet('part:' + oem + ':' + categoryId));
+      const name = currentPartName();
+
+      const intro = document.createElement('div');
+      intro.className = 'aspect-intro';
+      intro.textContent = 'eBay requires these details for this category:';
+      box.appendChild(intro);
+
+      currentAspects.forEach((a, i) => {
+        const row = document.createElement('div');
+        row.className = 'aspect-row';
+        const label = document.createElement('label');
+        label.htmlFor = 'aspect-' + i;
+        label.textContent = a.name;
+        row.appendChild(label);
+        const start = remembered[a.name] || guessValue(a.values, name) || '';
+        let el;
+        if (a.mode === 'SELECTION_ONLY' && a.values.length) {
+          el = document.createElement('select');
+          el.className = 'cat-select';
+          const blank = document.createElement('option');
+          blank.value = ''; blank.textContent = 'Choose\u2026';
+          el.appendChild(blank);
+          a.values.forEach(v => {
+            const o = document.createElement('option');
+            o.value = v; o.textContent = v;
+            el.appendChild(o);
+          });
+          el.value = a.values.includes(start) ? start : '';
+        } else {
+          el = document.createElement('input');
+          el.type = 'text';
+          el.autocomplete = 'off';
+          el.value = start;
+          if (a.values.length) {
+            const dl = document.createElement('datalist');
+            dl.id = 'aspect-list-' + i;
+            a.values.forEach(v => { const o = document.createElement('option'); o.value = v; dl.appendChild(o); });
+            row.appendChild(dl);
+            el.setAttribute('list', dl.id);
+          }
+        }
+        el.id = 'aspect-' + i;
+        row.appendChild(el);
+        box.appendChild(row);
+      });
+    } catch (e) {
+      if (reqId === aspectRequest) { loadedAspectCat = categoryId; catMsg('Could not load the details eBay requires.', 'err'); }
+    }
+  }
+
+  function collectAspects() {
+    const aspects = {}, missing = [];
+    currentAspects.forEach((a, i) => {
+      const el = document.getElementById('aspect-' + i);
+      const v = el ? el.value.trim() : '';
+      if (v) aspects[a.name] = [v]; else missing.push(a.name);
+    });
+    return { aspects, missing };
+  }
+
+  catSelect.addEventListener('change', () => loadAspects(catSelect.value));
 
   document.getElementById('catSearchBtn').addEventListener('click', () => {
     loadCategories(document.getElementById('catSearch').value, null);
@@ -948,6 +1060,17 @@
       pushStatus.className = 'status err';
       return;
     }
+    if (loadedAspectCat !== cat.id) {
+      pushStatus.textContent = 'Still loading the details eBay requires for this category. Try again in a moment.';
+      pushStatus.className = 'status err';
+      return;
+    }
+    const details = collectAspects();
+    if (details.missing.length) {
+      pushStatus.textContent = `Fill in the required details first: ${details.missing.join(', ')}.`;
+      pushStatus.className = 'status err';
+      return;
+    }
     const firstMake = entry.fits[0] ? entry.fits[0].make : 'Ford';
     const brand = /^(Ford|Mercury|Lincoln|Edsel)$/i.test(firstMake) ? 'Ford' : firstMake;
     const pushBtn = document.getElementById('pushBtn');
@@ -962,7 +1085,7 @@
       const resp = await fetch('/.netlify/functions/ebay-create-draft', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sku, title, description, oem: entry.oem, price, fits: entry.fits, categoryId: cat.id, brand })
+        body: JSON.stringify({ sku, title, description, oem: entry.oem, price, fits: entry.fits, categoryId: cat.id, brand, aspects: details.aspects })
       });
       const raw = await resp.text();
       let data = {};
@@ -971,6 +1094,8 @@
         const ebayMsg = data.message || `Draft created on eBay (offer ${data.offerId}).`;
         if (!known) rememberSku(entry.oem, sku);
         rememberCat(entry.oem, cat);
+        aspectMemSet('cat:' + cat.id, details.aspects);
+        aspectMemSet('part:' + entry.oem + ':' + cat.id, details.aspects);
         whereAdd(entry.oem, slot.box);
         const s = boxState();
         s.pushed += 1;
