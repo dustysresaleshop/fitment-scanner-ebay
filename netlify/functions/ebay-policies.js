@@ -1,15 +1,36 @@
 // netlify/functions/ebay-policies.js
 // Setup tool for eBay business policies (shipping, payment, returns).
-//   /.netlify/functions/ebay-policies            -> lists your policies
+//   /.netlify/functions/ebay-policies            -> checks access and lists your policies
 //   /.netlify/functions/ebay-policies?create=1   -> creates a working test set
 // Delete this file once your policies are set up.
-const { getAccessToken, apiBase } = require('./utils/ebay-auth');
+const { tokenUrl, apiBase } = require('./utils/ebay-auth');
+
+const ACCOUNT_SCOPES = 'https://api.ebay.com/oauth/api_scope/sell.inventory https://api.ebay.com/oauth/api_scope/sell.account';
 
 const reply = (statusCode, obj) => ({
   statusCode,
-  headers: { 'Content-Type': 'application/json' },
+  headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
   body: JSON.stringify(obj, null, 2)
 });
+
+// Ask for the account permission directly, so we can see if eBay refuses it
+async function accountToken() {
+  const rt = process.env.EBAY_REFRESH_TOKEN || '';
+  const resp = await fetch(tokenUrl(), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Authorization: 'Basic ' + Buffer.from(`${process.env.EBAY_CLIENT_ID}:${process.env.EBAY_CLIENT_SECRET}`).toString('base64')
+    },
+    body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: rt, scope: ACCOUNT_SCOPES }).toString()
+  });
+  const data = await resp.json().catch(() => ({}));
+  return {
+    token: resp.ok ? data.access_token : null,
+    check: resp.ok ? 'OK: token includes account permission' : `FAILED: ${data.error || resp.status} ${data.error_description || ''}`.trim(),
+    refreshTokenEndsWith: rt ? rt.slice(-6) : '(not set)'
+  };
+}
 
 async function call(base, token, method, path, body) {
   const resp = await fetch(base + path, {
@@ -53,29 +74,40 @@ async function listPolicies(base, token) {
 exports.handler = async (event) => {
   let step = 'token';
   try {
-    const token = await getAccessToken();
     const base = apiBase();
+    const sandbox = /sandbox/i.test(base);
     const env = {
       EBAY_FULFILLMENT_POLICY_ID: process.env.EBAY_FULFILLMENT_POLICY_ID || '(not set)',
       EBAY_PAYMENT_POLICY_ID: process.env.EBAY_PAYMENT_POLICY_ID || '(not set)',
       EBAY_RETURN_POLICY_ID: process.env.EBAY_RETURN_POLICY_ID || '(not set)'
     };
-    const sandbox = /sandbox/i.test(base);
 
-    if ((event.queryStringParameters || {}).create !== '1') {
-      step = 'list';
-      return reply(200, { environment: sandbox ? 'sandbox' : 'production', currentNetlifySettings: env, policies: await listPolicies(base, token) });
+    const t = await accountToken();
+    const diagnostics = { tokenCheck: t.check, refreshTokenEndsWith: t.refreshTokenEndsWith };
+    if (!t.token) {
+      return reply(200, { environment: sandbox ? 'sandbox' : 'production', diagnostics,
+        next: 'The saved refresh token does not include the account permission. Get a new one from ebay-connect, save it in Netlify, and redeploy.' });
     }
 
     // Business policies must be switched on for the account (safe to repeat)
     step = 'opt_in';
-    await call(base, token, 'POST', '/sell/account/v1/program/opt_in', { programType: 'SELLING_POLICY_MANAGEMENT' });
+    const optIn = await call(base, t.token, 'POST', '/sell/account/v1/program/opt_in', { programType: 'SELLING_POLICY_MANAGEMENT' });
+    diagnostics.businessPoliciesOptIn = optIn.ok ? 'OK: signed up (or already signed up)' : 'Response: ' + errText(optIn);
+    const programs = await call(base, t.token, 'GET', '/sell/account/v1/program/get_opted_in_programs');
+    diagnostics.optedInPrograms = programs.ok
+      ? (programs.data.programs || []).map(p => p.programType)
+      : 'Error: ' + errText(programs);
+
+    if ((event.queryStringParameters || {}).create !== '1') {
+      step = 'list';
+      return reply(200, { environment: sandbox ? 'sandbox' : 'production', diagnostics, currentNetlifySettings: env, policies: await listPolicies(base, t.token) });
+    }
 
     const categoryTypes = [{ name: 'ALL_EXCLUDING_MOTORS_VEHICLES' }];
     const created = {};
 
     step = 'create_shipping';
-    const f = await call(base, token, 'POST', '/sell/account/v1/fulfillment_policy', {
+    const f = await call(base, t.token, 'POST', '/sell/account/v1/fulfillment_policy', {
       name: 'Fitment App Shipping',
       marketplaceId: 'EBAY_US',
       categoryTypes,
@@ -95,7 +127,7 @@ exports.handler = async (event) => {
     created.EBAY_FULFILLMENT_POLICY_ID = f.ok ? f.data.fulfillmentPolicyId : 'Error: ' + errText(f);
 
     step = 'create_payment';
-    const p = await call(base, token, 'POST', '/sell/account/v1/payment_policy', {
+    const p = await call(base, t.token, 'POST', '/sell/account/v1/payment_policy', {
       name: 'Fitment App Payment',
       marketplaceId: 'EBAY_US',
       categoryTypes,
@@ -104,7 +136,7 @@ exports.handler = async (event) => {
     created.EBAY_PAYMENT_POLICY_ID = p.ok ? p.data.paymentPolicyId : 'Error: ' + errText(p);
 
     step = 'create_returns';
-    const r = await call(base, token, 'POST', '/sell/account/v1/return_policy', {
+    const r = await call(base, t.token, 'POST', '/sell/account/v1/return_policy', {
       name: 'Fitment App Returns',
       marketplaceId: 'EBAY_US',
       categoryTypes,
@@ -116,6 +148,7 @@ exports.handler = async (event) => {
 
     return reply(200, {
       environment: sandbox ? 'sandbox' : 'production',
+      diagnostics,
       created,
       next: 'Copy each ID above into the matching Netlify environment variable, then redeploy.'
     });
