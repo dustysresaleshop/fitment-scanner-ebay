@@ -1,6 +1,9 @@
 // netlify/functions/ebay-category.js
 // Suggests eBay Motors categories for a part name. Use: /.netlify/functions/ebay-category?q=intake%20valve
-const { tokenUrl, apiBase } = require('./utils/ebay-auth');
+// Always reads eBay's real (Production) category list, because Sandbox is missing
+// most car-part categories. This is read-only and doesn't touch your listings.
+const { getAppAccessToken } = require('./utils/ebay-auth');
+const TAXONOMY_BASE = 'https://api.ebay.com';
 
 const reply = (statusCode, obj, cache) => ({
   statusCode,
@@ -12,22 +15,13 @@ const reply = (statusCode, obj, cache) => ({
 let cached = null;
 async function appToken() {
   if (cached && cached.expires > Date.now()) return cached.token;
-  const resp = await fetch(tokenUrl(), {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      Authorization: 'Basic ' + Buffer.from(`${process.env.EBAY_CLIENT_ID}:${process.env.EBAY_CLIENT_SECRET}`).toString('base64')
-    },
-    body: new URLSearchParams({ grant_type: 'client_credentials', scope: 'https://api.ebay.com/oauth/api_scope' }).toString()
-  });
-  const data = await resp.json().catch(() => ({}));
-  if (!resp.ok) throw new Error(`App token failed: ${data.error_description || data.error || resp.status}`);
-  cached = { token: data.access_token, expires: Date.now() + ((data.expires_in || 7200) - 300) * 1000 };
-  return cached.token;
+  const token = await getAppAccessToken();
+  cached = { token, expires: Date.now() + 90 * 60 * 1000 };
+  return token;
 }
 
 async function suggest(token, q) {
-  const resp = await fetch(`${apiBase()}/commerce/taxonomy/v1/category_tree/0/get_category_suggestions?q=${encodeURIComponent(q)}`, {
+  const resp = await fetch(`${TAXONOMY_BASE}/commerce/taxonomy/v1/category_tree/0/get_category_suggestions?q=${encodeURIComponent(q)}`, {
     headers: { Authorization: `Bearer ${token}`, 'Accept-Language': 'en-US' }
   });
   const data = await resp.json().catch(() => ({}));
@@ -49,7 +43,7 @@ const isMotors = c => /^eBay Motors/i.test(c.path);
 
 // Required item details ("aspects") for a category, e.g. Type
 async function requiredAspects(token, categoryId) {
-  const resp = await fetch(`${apiBase()}/commerce/taxonomy/v1/category_tree/0/get_item_aspects_for_category?category_id=${categoryId}`, {
+  const resp = await fetch(`${TAXONOMY_BASE}/commerce/taxonomy/v1/category_tree/0/get_item_aspects_for_category?category_id=${categoryId}`, {
     headers: { Authorization: `Bearer ${token}`, 'Accept-Language': 'en-US' }
   });
   const data = await resp.json().catch(() => ({}));
@@ -111,4 +105,3 @@ exports.handler = async (event) => {
     return reply(500, { error: e.message });
   }
 };
-
