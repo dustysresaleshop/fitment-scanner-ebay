@@ -2,7 +2,7 @@
 // Suggests eBay Motors categories for a part name. Use: /.netlify/functions/ebay-category?q=intake%20valve
 // Always reads eBay's real (Production) category list, because Sandbox is missing
 // most car-part categories. This is read-only and doesn't touch your listings.
-const { getAppAccessToken } = require('./utils/ebay-auth');
+const { getAppAccessToken, tokenUrl, apiBase } = require('./utils/ebay-auth');
 const TAXONOMY_BASE = 'https://api.ebay.com';
 // eBay Motors (car parts) has its own category list, separate from the main eBay list
 const MOTORS_TREE = '100';
@@ -65,8 +65,37 @@ async function requiredAspects(token, categoryId) {
     }));
 }
 
+// Diagnostic: does the environment your listings use (Sandbox or Production) know this category?
+async function envCategoryCheck(categoryId) {
+  const tokResp = await fetch(tokenUrl(), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Authorization: 'Basic ' + Buffer.from(`${process.env.EBAY_CLIENT_ID}:${process.env.EBAY_CLIENT_SECRET}`).toString('base64')
+    },
+    body: new URLSearchParams({ grant_type: 'client_credentials', scope: 'https://api.ebay.com/oauth/api_scope' }).toString()
+  });
+  const tok = await tokResp.json().catch(() => ({}));
+  if (!tokResp.ok) return { error: 'Token failed: ' + (tok.error_description || tok.error || tokResp.status) };
+  const out = { environment: /sandbox/i.test(apiBase()) ? 'sandbox' : 'production', categoryId };
+  for (const tree of ['0', '100']) {
+    const r = await fetch(`${apiBase()}/commerce/taxonomy/v1/category_tree/${tree}/get_category_subtree?category_id=${categoryId}`, {
+      headers: { Authorization: `Bearer ${tok.access_token}`, 'Accept-Language': 'en-US' }
+    });
+    const d = await r.json().catch(() => ({}));
+    out[tree === '0' ? 'mainEbayList' : 'ebayMotorsList'] = r.ok
+      ? 'FOUND: ' + ((d.categorySubtreeNode && d.categorySubtreeNode.category && d.categorySubtreeNode.category.categoryName) || '')
+      : 'NOT FOUND (' + ((d.errors || []).map(e => `${e.errorId} ${e.message}`).join(' | ') || r.status) + ')';
+  }
+  return out;
+}
+
 exports.handler = async (event) => {
   const qs = event.queryStringParameters || {};
+  if (qs.check) {
+    if (!/^\d+$/.test(qs.check)) return reply(400, { error: 'Bad category ID' });
+    try { return reply(200, await envCategoryCheck(qs.check)); } catch (e) { return reply(500, { error: e.message }); }
+  }
   if (qs.aspects) {
     if (!/^\d+$/.test(qs.aspects)) return reply(400, { error: 'Bad category ID' });
     try {
