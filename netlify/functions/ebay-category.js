@@ -3,14 +3,14 @@
 // Always reads eBay's real (Production) category list, because Sandbox is missing
 // most car-part categories. This is read-only and doesn't touch your listings.
 const { getAppAccessToken, tokenUrl, apiBase } = require('./utils/ebay-auth');
+const { requireAppKey } = require('./utils/app-auth');
 const TAXONOMY_BASE = 'https://api.ebay.com';
 // eBay Motors (car parts) has its own category list, separate from the main eBay list
 const MOTORS_TREE = '100';
 
 const reply = (statusCode, obj, cache) => ({
   statusCode,
-  headers: Object.assign({ 'Content-Type': 'application/json' },
-    cache ? { 'Netlify-CDN-Cache-Control': 'public, s-maxage=604800' } : {}),
+  headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
   body: JSON.stringify(obj)
 });
 
@@ -91,6 +91,9 @@ async function envCategoryCheck(categoryId) {
 }
 
 exports.handler = async (event) => {
+  const denied = requireAppKey(event);   // app password check
+  if (denied) return denied;
+
   const qs = event.queryStringParameters || {};
   if (qs.check) {
     if (!/^\d+$/.test(qs.check)) return reply(400, { error: 'Bad category ID' });
