@@ -1,6 +1,7 @@
 // netlify/functions/ebay-publish-offer.js
 // Takes an eBay draft (offer) live. Body: { "offerId": "1234567890" }
 const { getAccessToken, apiBase } = require('./utils/ebay-auth');
+const { requireAppKey } = require('./utils/app-auth');
 
 const reply = (statusCode, obj) => ({
   statusCode,
@@ -22,6 +23,9 @@ function summarize(text) {
 }
 
 exports.handler = async (event) => {
+  const denied = requireAppKey(event);   // app password check
+  if (denied) return denied;
+
   if (event.httpMethod !== 'POST') return reply(405, { message: 'Use POST.' });
   let step = 'start';
   try {
