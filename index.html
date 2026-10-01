@@ -122,6 +122,11 @@
   .box-buttons { display: flex; gap: 8px; }
 
   /* eBay category picker */
+  /* Optional side / position / color */
+  .opt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .opt-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+  .opt-grid .opt-wide { grid-column: 1 / -1; }
+
   /* Listing preview */
   .preview { margin-top: 12px; font-size: 14px; }
   .preview-row { display: grid; grid-template-columns: 110px 1fr; gap: 8px; padding: 8px 0; border-top: 1px solid var(--line); }
@@ -223,6 +228,30 @@
       </div>
       <div class="status" id="catStatus"></div>
       <div id="aspectBox"></div>
+    </div>
+    <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line);">
+      <div class="part-meta" style="margin-bottom:6px;">Optional details (added to the title and item specifics)</div>
+      <div class="opt-grid">
+        <label>Side
+          <select id="optSide" class="cat-select">
+            <option value="">Not specified</option>
+            <option value="Left">Left (Driver Side)</option>
+            <option value="Right">Right (Passenger Side)</option>
+          </select>
+        </label>
+        <label>Front / Rear
+          <select id="optPosition" class="cat-select">
+            <option value="">Not specified</option>
+            <option value="Front">Front</option>
+            <option value="Rear">Rear</option>
+          </select>
+        </label>
+        <label class="opt-wide">Color
+          <select id="optColor" class="cat-select">
+            <option value="">Not specified</option>
+          </select>
+        </label>
+      </div>
     </div>
     <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line);">
       <div class="part-meta" style="margin-bottom:8px;">Your price (USD)</div>
@@ -400,6 +429,7 @@
     document.getElementById('resultCode').textContent = rawCode;
     renderFits(rawCode, entry);
     renderWhere(entry.oem);
+    resetOptions();
     loadCategories(entry.name, entry.oem);
     document.getElementById('priceInput').value = '';
     document.getElementById('soldLink').href = 'https://www.ebay.com/sch/i.html?_nkw=' + encodeURIComponent(entry.oem) + '&LH_Sold=1&LH_Complete=1';
@@ -1242,6 +1272,35 @@
     e.target.value = '';
   });
 
+  // ---- Optional side / front-rear / color (none selected by default) ----
+  const INTERIOR_COLORS = [
+    'Black', 'Charcoal', 'Graphite', 'Dark Gray', 'Medium Gray', 'Light Gray', 'Silver',
+    'White', 'Ivory', 'Beige', 'Tan', 'Parchment', 'Light Parchment', 'Medium Parchment',
+    'Camel', 'Saddle', 'Brown', 'Dark Brown', 'Red', 'Dark Red', 'Blue', 'Light Blue',
+    'Dark Blue', 'Navy', 'Green', 'Dark Green', 'Teal'
+  ];
+  const optSide = document.getElementById('optSide');
+  const optPosition = document.getElementById('optPosition');
+  const optColor = document.getElementById('optColor');
+  INTERIOR_COLORS.forEach(c => {
+    const o = document.createElement('option');
+    o.value = c; o.textContent = c;
+    optColor.appendChild(o);
+  });
+  function resetOptions() { optSide.value = ''; optPosition.value = ''; optColor.value = ''; }
+  function getOptions() { return { side: optSide.value, position: optPosition.value, color: optColor.value }; }
+  function optionWords(o) {
+    return [o.position, o.side === 'Left' ? 'Driver Side' : o.side === 'Right' ? 'Passenger Side' : '', o.color].filter(Boolean);
+  }
+  function optionAspects(o) {
+    const a = {};
+    const place = [o.position, o.side].filter(Boolean);
+    if (place.length) a['Placement on Vehicle'] = place;
+    if (o.color) a['Color'] = [o.color];
+    return a;
+  }
+  resetOptions();
+
   // ---- Listing title, description, preview, and sending to eBay ----
   const titleInput = document.getElementById('titleInput');
   const pushBtnEl = document.getElementById('pushBtn');
@@ -1254,14 +1313,18 @@
   }
 
   // "Ford OEM NOS Intake Valve 3.8L E9SZ-6507-B Fits 1982-1995 Ford Thunderbird", trimmed to 80
-  function titleFor(entry) {
+  function titleFor(entry, opts = {}) {
     let name = String(entry.name || '').replace(/\s*\(([^)]*)\)/g, (m, inner) => ' ' + shortEngines(inner).replace(/,\s*/g, '/'));
     name = name.replace(/^\s*(Ford\s+)?(OEM\s+)?(NOS\s+)?/i, '').trim();
-    const base = `Ford OEM NOS ${name} ${entry.oem}`.replace(/\s+/g, ' ').trim();
+    const words = optionWords(opts);
     const f = entry.fits[0];
-    const extras = f ? [` Fits ${f.years} ${f.make} ${f.model}`, ` Fits ${f.years} ${f.model}`, ` ${f.years} ${f.model}`] : [];
-    for (const x of extras) if ((base + x).length <= 80) return base + x;
-    return base.slice(0, 80);
+    const fitsParts = f ? [` Fits ${f.years} ${f.make} ${f.model}`, ` Fits ${f.years} ${f.model}`, ` ${f.years} ${f.model}`, ''] : [''];
+    // Keep as many side/color words as fit; drop the "Fits..." part before dropping those
+    for (let n = words.length; n >= 0; n--) {
+      const base = `Ford OEM NOS ${name} ${words.slice(0, n).join(' ')} ${entry.oem}`.replace(/\s+/g, ' ').trim();
+      for (const x of fitsParts) if ((base + x).length <= 80) return base + x;
+    }
+    return `Ford OEM NOS ${name} ${entry.oem}`.replace(/\s+/g, ' ').trim().slice(0, 80);
   }
 
   function descriptionFor(entry) {
@@ -1295,7 +1358,9 @@
     const sku = known || makeSku(entry.oem, slot);
     const firstMake = entry.fits[0] ? entry.fits[0].make : 'Ford';
     const brand = /^(Ford|Mercury|Lincoln|Edsel)$/i.test(firstMake) ? 'Ford' : firstMake;
-    return { entry, price, cat, details, imageUrls, known, slot, sku, brand };
+    const opts = getOptions();
+    const aspects = Object.assign({}, optionAspects(opts), details.aspects);   // required details win
+    return { entry, price, cat, details, aspects, opts, imageUrls, known, slot, sku, brand };
   }
 
   function previewRow(label, content) {
@@ -1321,7 +1386,7 @@
     body.appendChild(previewRow('Category', L.cat.path || L.cat.name));
 
     const specifics = [`Brand: ${L.brand}`, `Manufacturer Part Number: ${L.entry.oem}`, `OEM Part Number: ${L.entry.oem}`]
-      .concat(Object.entries(L.details.aspects).map(([k, v]) => `${k}: ${v.join(', ')}`));
+      .concat(Object.entries(L.aspects).map(([k, v]) => `${k}: ${v.join(', ')}`));
     body.appendChild(previewRow('Item specifics', specifics.join(' \u00b7 ')));
 
     if (L.imageUrls.length) {
@@ -1379,7 +1444,7 @@
       return;
     }
     draftStatus.textContent = '';
-    titleInput.value = titleFor(L.entry);
+    titleInput.value = titleFor(L.entry, L.opts);
     updateTitleCount();
     renderPreview(L);
     document.getElementById('pushStatus').textContent = '';
@@ -1411,7 +1476,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           sku: L.sku, title, description, oem: L.entry.oem, price: L.price, fits: L.entry.fits,
-          categoryId: L.cat.id, brand: L.brand, aspects: L.details.aspects, imageUrls: L.imageUrls
+          categoryId: L.cat.id, brand: L.brand, aspects: L.aspects, imageUrls: L.imageUrls
         })
       });
       const raw = await resp.text();
