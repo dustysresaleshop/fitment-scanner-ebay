@@ -118,6 +118,18 @@
   .box-buttons { display: flex; gap: 8px; }
 
   /* eBay category picker */
+  /* Listing photos */
+  .photo-strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px; margin: 8px 0; }
+  .photo-card { position: relative; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #000; aspect-ratio: 4 / 3; }
+  .photo-card img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .photo-badge { position: absolute; left: 4px; top: 4px; font-size: 11px; font-weight: 600; background: var(--yellow); color: #1a1a1a; padding: 1px 6px; border-radius: 4px; }
+  .photo-state { position: absolute; left: 4px; bottom: 4px; font-size: 11px; background: rgba(0,0,0,.75); color: #fff; padding: 1px 6px; border-radius: 4px; }
+  .photo-state.failed { background: var(--red); }
+  .photo-tools { position: absolute; right: 4px; top: 4px; display: flex; gap: 4px; }
+  .photo-tools button { padding: 1px 7px; font-size: 13px; border-radius: 4px; background: rgba(0,0,0,.75); color: #fff; border: 1px solid rgba(255,255,255,.35); }
+  .photo-buttons { display: flex; gap: 8px; }
+  .photo-buttons button { flex: 1; margin-top: 0; }
+
   .aspect-intro { margin-top: 12px; font-size: 12px; color: var(--muted); }
   .aspect-row { margin-top: 8px; }
   .aspect-row label { display: block; font-size: 13px; margin-bottom: 4px; }
@@ -201,6 +213,16 @@
       <div class="part-meta" style="margin-bottom:8px;">Your price (USD)</div>
       <input type="text" id="priceInput" placeholder="e.g. 24.99" inputmode="decimal" autocomplete="off" style="width:100%;">
       <div class="demo-codes" style="margin-top:8px;"><a id="soldLink" href="#" target="_blank" rel="noopener" style="color:var(--yellow);">Check sold prices on eBay</a></div>
+    </div>
+    <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line);">
+      <div class="part-meta">Photos <span id="photoCount">(0 of 24)</span>. The first photo is the main one.</div>
+      <div class="photo-strip" id="photoStrip"></div>
+      <div class="photo-buttons">
+        <button class="btn-ghost" id="photoBtn">Take photo with webcam</button>
+        <button class="btn-ghost" id="photoFileBtn">Add from computer</button>
+      </div>
+      <input type="file" id="photoFile" accept="image/*" multiple hidden>
+      <div class="status" id="photoStatus"></div>
     </div>
     <button class="btn-primary" id="draftBtn" style="margin-top:14px;">Generate eBay listing draft</button>
   </div>
@@ -616,6 +638,8 @@
     const key = normalize(rawCode);
     currentLookup = null;
     hideExtras();
+    clearPhotos();
+    if (labelScanner) labelScanner.pauseAuto(false);
 
     if (CATALOG[key]) { showResult(rawCode, CATALOG[key]); return; }
 
@@ -1020,6 +1044,129 @@
     if (e.key === 'Enter') { e.preventDefault(); loadCategories(e.target.value, null); }
   });
 
+  // ---- Listing photos (webcam or computer), uploaded to eBay as they're added ----
+  const MAX_PHOTOS = 24;
+  const photoStrip = document.getElementById('photoStrip');
+  const photoStatus = document.getElementById('photoStatus');
+  const photoBtn = document.getElementById('photoBtn');
+  let photos = [];
+  let photoSeq = 0;
+
+  function photoMsg(text, kind) {
+    photoStatus.textContent = text;
+    photoStatus.className = 'status' + (kind ? ' ' + kind : '');
+  }
+
+  function renderPhotos() {
+    photoStrip.innerHTML = '';
+    document.getElementById('photoCount').textContent = `(${photos.length} of ${MAX_PHOTOS})`;
+    photos.forEach((p, i) => {
+      const card = document.createElement('div');
+      card.className = 'photo-card';
+      const img = document.createElement('img');
+      img.src = p.data; img.alt = `Photo ${i + 1}`;
+      card.appendChild(img);
+      if (i === 0) {
+        const b = document.createElement('span');
+        b.className = 'photo-badge'; b.textContent = 'Main';
+        card.appendChild(b);
+      }
+      const state = document.createElement('span');
+      state.className = 'photo-state' + (p.status === 'failed' ? ' failed' : '');
+      state.textContent = p.status === 'uploading' ? 'Uploading\u2026' : p.status === 'done' ? '\u2713 On eBay' : 'Failed';
+      if (p.status === 'failed' && p.error) state.title = p.error;
+      card.appendChild(state);
+
+      const tools = document.createElement('div');
+      tools.className = 'photo-tools';
+      const tool = (label, title, fn) => {
+        const btn = document.createElement('button');
+        btn.type = 'button'; btn.textContent = label; btn.title = title; btn.setAttribute('aria-label', title);
+        btn.addEventListener('click', fn);
+        tools.appendChild(btn);
+      };
+      if (p.status === 'failed') tool('\u21bb', 'Retry upload', () => uploadPhoto(p));
+      if (i > 0) tool('\u2190', 'Move earlier (make main if first)', () => {
+        photos.splice(i, 1); photos.splice(i - 1, 0, p); renderPhotos();
+      });
+      tool('\u00d7', 'Remove photo', () => { photos = photos.filter(x => x !== p); renderPhotos(); });
+      card.appendChild(tools);
+      photoStrip.appendChild(card);
+    });
+    photoBtn.disabled = photos.length >= MAX_PHOTOS;
+  }
+
+  async function uploadPhoto(p) {
+    p.status = 'uploading'; p.error = '';
+    renderPhotos();
+    try {
+      const resp = await fetch('/.netlify/functions/ebay-upload-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: p.data })
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok && data.imageUrl) { p.url = data.imageUrl; p.status = 'done'; }
+      else { p.status = 'failed'; p.error = data.message || `Error ${resp.status}`; photoMsg('A photo failed to upload: ' + p.error, 'err'); }
+    } catch (e) {
+      p.status = 'failed'; p.error = 'Could not reach the upload function.';
+      photoMsg(p.error, 'err');
+    }
+    renderPhotos();
+  }
+
+  function addPhoto(dataUrl) {
+    if (photos.length >= MAX_PHOTOS) { photoMsg(`eBay allows up to ${MAX_PHOTOS} photos.`, 'err'); return; }
+    const p = { id: ++photoSeq, data: dataUrl, status: 'uploading' };
+    photos.push(p);
+    uploadPhoto(p);
+  }
+
+  function clearPhotos() {
+    photos = [];
+    photoMsg('');
+    renderPhotos();
+  }
+
+  async function ensureCamera() {
+    if (!labelScanner) await startLabelReader();
+    for (let i = 0; i < 50; i++) {             // wait up to ~5 seconds for the picture
+      const shot = labelScanner && labelScanner.snapshot();
+      if (shot) return true;
+      await new Promise(r => setTimeout(r, 100));
+    }
+    return false;
+  }
+
+  photoBtn.addEventListener('click', async () => {
+    photoMsg('');
+    if (!(await ensureCamera())) { photoMsg('The webcam isn\u2019t ready. Check that the label reader shows a picture.', 'err'); return; }
+    labelScanner.pauseAuto(true);
+    const shot = labelScanner.snapshot();
+    if (shot) { addPhoto(shot); photoMsg('Photo taken. It shows up above and uploads to eBay automatically.', 'ok'); }
+  });
+
+  document.getElementById('photoFileBtn').addEventListener('click', () => document.getElementById('photoFile').click());
+  document.getElementById('photoFile').addEventListener('change', async (e) => {
+    const files = [...e.target.files].slice(0, MAX_PHOTOS - photos.length);
+    for (const f of files) {
+      try {
+        const url = URL.createObjectURL(f);
+        const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+        const scale = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
+        const c = document.createElement('canvas');
+        c.width = Math.round(img.naturalWidth * scale);
+        c.height = Math.round(img.naturalHeight * scale);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        URL.revokeObjectURL(url);
+        addPhoto(c.toDataURL('image/jpeg', 0.88));
+      } catch (err) {
+        photoMsg(`Couldn't open ${f.name}.`, 'err');
+      }
+    }
+    e.target.value = '';
+  });
+
   document.getElementById('draftBtn').addEventListener('click', () => {
     const code = resultPanel.dataset.code;
     const entry = JSON.parse(resultPanel.dataset.entry);
@@ -1078,6 +1225,22 @@
     const known = skuFor(entry.oem);
     const slot = nextSlot();
     const sku = known || makeSku(entry.oem, slot);
+    if (photos.some(p => p.status === 'uploading')) {
+      pushStatus.textContent = 'Wait a moment for the photos to finish uploading.';
+      pushStatus.className = 'status err';
+      return;
+    }
+    if (photos.some(p => p.status === 'failed')) {
+      pushStatus.textContent = 'A photo failed to upload. Retry it (\u21bb) or remove it (\u00d7).';
+      pushStatus.className = 'status err';
+      return;
+    }
+    const imageUrls = photos.map(p => p.url);
+    if (!known && !imageUrls.length) {
+      pushStatus.textContent = 'Add at least one photo first. eBay requires a photo to publish a listing.';
+      pushStatus.className = 'status err';
+      return;
+    }
     pushBtn.disabled = true;
     pushStatus.textContent = 'Sending to eBay...';
     pushStatus.className = 'status';
@@ -1085,7 +1248,7 @@
       const resp = await fetch('/.netlify/functions/ebay-create-draft', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sku, title, description, oem: entry.oem, price, fits: entry.fits, categoryId: cat.id, brand, aspects: details.aspects })
+        body: JSON.stringify({ sku, title, description, oem: entry.oem, price, fits: entry.fits, categoryId: cat.id, brand, aspects: details.aspects, imageUrls })
       });
       const raw = await resp.text();
       let data = {};
@@ -1094,6 +1257,7 @@
         const ebayMsg = data.message || `Draft created on eBay (offer ${data.offerId}).`;
         if (!known) rememberSku(entry.oem, sku);
         rememberCat(entry.oem, cat);
+        if (labelScanner) labelScanner.pauseAuto(false);
         aspectMemSet('cat:' + cat.id, details.aspects);
         aspectMemSet('part:' + entry.oem + ':' + cat.id, details.aspects);
         whereAdd(entry.oem, slot.box);
