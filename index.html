@@ -114,6 +114,8 @@
   .manual-label { display: block; margin: 12px 0 6px; }
   .manual-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
   .manual-grid input { min-width: 0; }
+  #manualPanel textarea { min-height: 70px; }
+  #mPaste { min-height: 90px; }
   table.fit td .btn-copy { padding: 4px 8px; font-size: 12px; }
 
   /* Storage boxes */
@@ -300,7 +302,7 @@
   </div>
 
   <div class="panel hidden" id="manualPanel">
-    <h2>Manual fitment for <span class="code-chip" id="manualPn"></span></h2>
+    <h2>Your database: <span class="code-chip" id="manualPn"></span></h2>
     <label class="part-meta manual-label" for="manualName">Part name (add the engine here for engine parts)</label>
     <input type="text" id="manualName" placeholder="e.g. Intake Valve .015 Oversize 3.8L V6" autocomplete="off" style="width:100%;">
     <div class="part-meta manual-label">Add a vehicle</div>
@@ -312,14 +314,23 @@
     </div>
     <datalist id="makeList"><option value="Ford"><option value="Mercury"><option value="Lincoln"><option value="Edsel"></datalist>
     <button class="btn-copy" id="mAdd">Add vehicle</button>
+    <label class="part-meta manual-label" for="mPaste">Or paste vehicles, one per line (like "1969-1972 Ford F-100" or "Mercury Grand Marquis 2000-2006")</label>
+    <textarea id="mPaste" placeholder="1969-1972 Ford F-100&#10;1969-1972 Ford F-250"></textarea>
+    <button class="btn-copy" id="mPasteAdd">Add pasted vehicles</button>
     <table class="fit">
       <thead><tr><th>Make</th><th>Model</th><th>Years</th><th></th></tr></thead>
       <tbody id="mBody"></tbody>
     </table>
+    <label class="part-meta manual-label" for="mBuyerNotes">Notes for buyers (added to the listing description)</label>
+    <textarea id="mBuyerNotes" placeholder="e.g. Package of 3 springs. Fits 1969+ Ford truck."></textarea>
+    <label class="part-meta manual-label" for="mPrivateNotes">Private notes (only you see these)</label>
+    <textarea id="mPrivateNotes" placeholder="e.g. Matched to another seller's listing, catalog line, where you found it"></textarea>
+    <label class="part-meta manual-label" for="mSource">Source link (optional)</label>
+    <input type="text" id="mSource" placeholder="https://..." autocomplete="off" style="width:100%;">
     <div class="status" id="mStatus"></div>
-    <button class="btn-primary" id="mSave" style="margin-top:10px;">Save fitment</button>
+    <button class="btn-primary" id="mSave" style="margin-top:10px;">Save to my database</button>
     <button class="btn-ghost" id="mCancel">Cancel</button>
-    <button class="btn-ghost hidden" id="mDelete">Delete saved fitment</button>
+    <button class="btn-ghost hidden" id="mDelete">Delete from my database</button>
   </div>
 
   <div class="panel hidden" id="draftPanel">
@@ -391,6 +402,7 @@
         } catch (e) {}
         lockInput.value = '';
         lockScreen.classList.add('hidden');
+        moveBrowserFitmentToDb();
       } else {
         lockStatus.textContent = d.message || 'Wrong password.';
         lockStatus.className = 'status err';
@@ -406,7 +418,7 @@
   lockBtn.addEventListener('click', tryUnlock);
   lockInput.addEventListener('keydown', e => { if (e.key === 'Enter') tryUnlock(); });
   document.getElementById('lockAppBtn').addEventListener('click', () => { forgetKey(); showLock('The app is locked on this computer.'); });
-  if (!appKey) showLock();
+  if (!appKey) showLock(); else setTimeout(() => moveBrowserFitmentToDb(), 1500);
 
   // ---- Mock OEM fitment catalog (1:1 clean lookups only, v1 scope) ----
   const CATALOG = {
@@ -486,7 +498,9 @@
 
   function renderFits(rawCode, entry) {
     document.getElementById('resultName').textContent = entry.name;
-    document.getElementById('resultMeta').textContent = `OEM #${entry.oem} · ${entry.fits.length} compatible vehicle${entry.fits.length > 1 ? 's' : ''}`;
+    document.getElementById('resultMeta').textContent = entry.fits.length
+      ? `OEM #${entry.oem} · ${entry.fits.length} compatible vehicle${entry.fits.length > 1 ? 's' : ''}`
+      : `OEM #${entry.oem} · no vehicles listed`;
     const body = document.getElementById('fitBody');
     body.innerHTML = '';
     entry.fits.forEach(f => {
@@ -632,11 +646,43 @@
   let manualPn = null;
   let manualRows = [];
 
-  function manualGet(pn) {
-    try { return JSON.parse(localStorage.getItem('manual:v1:' + pn)); } catch (e) { return null; }
+  // ---- Your parts database (on Netlify) ----
+  async function dbGet(pn) {
+    try {
+      const r = await apiFetch('/.netlify/functions/parts-db?pn=' + encodeURIComponent(pn));
+      if (!r.ok) return null;
+      const d = await r.json();
+      return d.found ? d.record : null;
+    } catch (e) { return null; }
   }
-  function manualSet(pn, data) {
-    try { localStorage.setItem('manual:v1:' + pn, JSON.stringify(data)); return true; } catch (e) { return false; }
+  async function dbSave(pn, record) {
+    const r = await apiFetch('/.netlify/functions/parts-db', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pn, record })
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.message || `Error ${r.status}`);
+    return d.record;
+  }
+  async function dbDelete(pn) {
+    const r = await apiFetch('/.netlify/functions/parts-db?pn=' + encodeURIComponent(pn), { method: 'DELETE' });
+    if (!r.ok) throw new Error(`Error ${r.status}`);
+  }
+
+  // One-time move of fitment saved in this browser into the database
+  async function moveBrowserFitmentToDb() {
+    let keys = [];
+    try { keys = Object.keys(localStorage).filter(k => k.startsWith('manual:v1:')); } catch (e) { return; }
+    for (const k of keys) {
+      try {
+        const old = JSON.parse(localStorage.getItem(k));
+        if (old && old.name) {
+          await dbSave(k.slice('manual:v1:'.length), { name: old.name, fits: old.fits || [] });
+          localStorage.removeItem(k);
+        }
+      } catch (e) { /* try again next time */ }
+    }
   }
 
   function hideExtras() {
@@ -674,15 +720,28 @@
   function showManualNote(saved) {
     const box = document.getElementById('lookupNote');
     box.innerHTML = '';
-    const d = document.createElement('div');
-    d.textContent = `Your saved manual fitment (stored in this browser on ${new Date(saved.savedAt).toLocaleDateString()}).`;
-    box.appendChild(d);
+    const add = (text, warn) => {
+      const d = document.createElement('div');
+      d.textContent = text;
+      if (warn) d.className = 'warn';
+      box.appendChild(d);
+    };
+    add(`From your database (saved ${new Date(saved.savedAt).toLocaleDateString()}).`);
+    if (!saved.fits || !saved.fits.length) add('No vehicles saved, so this listing won\u2019t have a compatibility chart.', true);
+    if (saved.buyerNotes) add('Buyer notes: ' + saved.buyerNotes);
+    if (saved.privateNotes) add('Private notes: ' + saved.privateNotes, true);
+    if (/^https?:\/\//.test(saved.source || '')) {
+      const a = document.createElement('a');
+      a.href = saved.source; a.target = '_blank'; a.rel = 'noopener';
+      a.textContent = 'Source link';
+      box.appendChild(a);
+    }
     box.classList.remove('hidden');
   }
 
   function showSavedManual(pn, saved) {
     currentLookup = null;
-    showResult(pn, { name: saved.name, oem: pn, fits: saved.fits });
+    showResult(pn, { name: saved.name, oem: pn, fits: saved.fits || [], buyerNotes: saved.buyerNotes || '' });
     showManualNote(saved);
     showResearch(pn, true);
   }
@@ -712,16 +771,21 @@
     mStatus.className = 'status' + (kind ? ' ' + kind : '');
   }
 
-  function openManual(pn) {
+  async function openManual(pn) {
     manualPn = pn;
-    const saved = manualGet(pn);
+    mMsg('Loading\u2026');
+    const saved = await dbGet(pn);
     let prefill = saved;
     if (!prefill && resultPanel.dataset.code === pn && !resultPanel.classList.contains('hidden')) {
       try { prefill = JSON.parse(resultPanel.dataset.entry); } catch (e) {}
     }
     document.getElementById('manualPn').textContent = pn;
     document.getElementById('manualName').value = prefill ? prefill.name : '';
-    manualRows = prefill ? prefill.fits.map(f => ({ make: f.make, model: f.model, years: f.years })) : [];
+    manualRows = prefill ? (prefill.fits || []).map(f => ({ make: f.make, model: f.model, years: f.years })) : [];
+    document.getElementById('mBuyerNotes').value = (prefill && prefill.buyerNotes) || '';
+    document.getElementById('mPrivateNotes').value = (saved && saved.privateNotes) || '';
+    document.getElementById('mSource').value = (saved && saved.source) || '';
+    document.getElementById('mPaste').value = '';
     renderManualRows();
     mMsg('');
     document.getElementById('mDelete').classList.toggle('hidden', !saved);
@@ -747,6 +811,34 @@
     mMsg('');
   }
 
+  // Reads lines like "1969-1972 Ford F-100", "2000 Mercury Grand Marquis", or "Ford F-100 1969-1972"
+  function parseVehicleLines(text) {
+    const rows = [], bad = [];
+    String(text).split(/\r?\n/).map(s => s.trim()).filter(Boolean).forEach(line => {
+      const clean = line.replace(/[\u2013\u2014]/g, '-').replace(/\s+/g, ' ');
+      let m = clean.match(/^((?:19|20)\d\d)(?:\s*-\s*((?:19|20)\d\d))?\s+([A-Za-z]+)\s+(.+)$/);
+      let from, to, make, model;
+      if (m) { [, from, to, make, model] = m; }
+      else {
+        m = clean.match(/^([A-Za-z]+)\s+(.+?)\s+((?:19|20)\d\d)(?:\s*-\s*((?:19|20)\d\d))?$/);
+        if (m) { [, make, model, from, to] = m; }
+      }
+      if (!m || (to && Number(to) < Number(from))) { bad.push(line); return; }
+      make = make.charAt(0).toUpperCase() + make.slice(1).toLowerCase();
+      rows.push({ make, model: model.trim(), years: to && to !== from ? `${from}-${to}` : from });
+    });
+    return { rows, bad };
+  }
+
+  document.getElementById('mPasteAdd').addEventListener('click', () => {
+    const { rows, bad } = parseVehicleLines(document.getElementById('mPaste').value);
+    rows.forEach(r => manualRows.push(r));
+    renderManualRows();
+    document.getElementById('mPaste').value = bad.join('\n');
+    if (bad.length) mMsg(`Added ${rows.length}. These lines weren\u2019t understood (left in the box to fix): ${bad.length}.`, 'err');
+    else mMsg(rows.length ? `Added ${rows.length} vehicle${rows.length > 1 ? 's' : ''}.` : 'Paste some vehicle lines first.', rows.length ? 'ok' : 'err');
+  });
+
   document.getElementById('manualOpenBtn').addEventListener('click', () => openManual(researchPanel.dataset.pn));
   document.getElementById('mAdd').addEventListener('click', addManualRow);
   ['mMake', 'mModel', 'mFrom', 'mTo'].forEach(id => {
@@ -755,18 +847,33 @@
     });
   });
   document.getElementById('mCancel').addEventListener('click', () => manualPanel.classList.add('hidden'));
-  document.getElementById('mSave').addEventListener('click', () => {
+  document.getElementById('mSave').addEventListener('click', async () => {
     const name = document.getElementById('manualName').value.trim();
     if (!name) { mMsg('Give the part a name first.', 'err'); return; }
-    if (!manualRows.length) { mMsg('Add at least one vehicle first.', 'err'); return; }
-    const saved = { name, fits: manualRows.slice(), savedAt: Date.now() };
-    if (!manualSet(manualPn, saved)) { mMsg('Could not save. Your browser may be blocking storage for this site.', 'err'); return; }
-    manualPanel.classList.add('hidden');
-    showSavedManual(manualPn, saved);
+    if (document.getElementById('mPaste').value.trim()) { mMsg('There are pasted lines not added yet. Click "Add pasted vehicles" or clear that box.', 'err'); return; }
+    if (!manualRows.length && !confirm('Save without any vehicles? The listing won\u2019t have a compatibility chart, so put fitment info in the buyer notes.')) return;
+    const btn = document.getElementById('mSave');
+    btn.disabled = true;
+    mMsg('Saving\u2026');
+    try {
+      const saved = await dbSave(manualPn, {
+        name,
+        fits: manualRows.slice(),
+        buyerNotes: document.getElementById('mBuyerNotes').value,
+        privateNotes: document.getElementById('mPrivateNotes').value,
+        source: document.getElementById('mSource').value.trim()
+      });
+      manualPanel.classList.add('hidden');
+      showSavedManual(manualPn, saved);
+    } catch (e) {
+      mMsg('Could not save: ' + e.message, 'err');
+    } finally {
+      btn.disabled = false;
+    }
   });
-  document.getElementById('mDelete').addEventListener('click', () => {
-    if (!confirm(`Delete your saved fitment for ${manualPn}?`)) return;
-    try { localStorage.removeItem('manual:v1:' + manualPn); } catch (e) {}
+  document.getElementById('mDelete').addEventListener('click', async () => {
+    if (!confirm(`Delete ${manualPn} from your database?`)) return;
+    try { await dbDelete(manualPn); } catch (e) { mMsg('Could not delete: ' + e.message, 'err'); return; }
     manualPanel.classList.add('hidden');
     lookup(manualPn);
   });
@@ -799,7 +906,8 @@
       return;
     }
 
-    const saved = manualGet(pn);
+    setStatus(`Checking your database for ${pn}\u2026`);
+    const saved = await dbGet(pn);
     if (saved) { showSavedManual(pn, saved); return; }
 
     if (lookupInFlight === pn) return;
@@ -976,7 +1084,7 @@
   }
   function whereText(oem) {
     const w = whereGet(oem);
-    const boxes = Object.keys(w).sort((a, b) => boxIndex(a) - boxIndex(b));
+    const boxes = Object.keys(w).sort((a, b) => boxIndex(a.split(' ')[0]) - boxIndex(b.split(' ')[0]) || a.localeCompare(b));
     return boxes.length ? 'In stock: ' + boxes.map(b => `Box ${b} (${w[b]})`).join(', ') : '';
   }
   function renderWhere(oem) {
@@ -1373,6 +1481,13 @@
     optColor.appendChild(o);
   });
   function resetOptions() { optSide.value = ''; optPosition.value = ''; optColor.value = ''; }
+  // Same part number but a different side, position, or color = a different listing
+  function partKey(oem, o) {
+    return (o && (o.side || o.position || o.color)) ? `${oem}|${o.side || ''}|${o.position || ''}|${o.color || ''}` : oem;
+  }
+  function variantLabel(o) {
+    return o ? [o.position, o.side, o.color].filter(Boolean).join(' ') : '';
+  }
   function getOptions() { return { side: optSide.value, position: optPosition.value, color: optColor.value }; }
   function optionWords(o) {
     return [o.position, o.side === 'Left' ? 'Driver Side' : o.side === 'Right' ? 'Passenger Side' : '', o.color].filter(Boolean);
@@ -1398,11 +1513,38 @@
   }
 
   // "Ford OEM NOS Intake Valve 3.8L E9SZ-6507-B Fits 1982-1995 Ford Thunderbird", trimmed to 80
+  // Most-searched models first (roughly by parts demand). Anything not listed ranks last.
+  const MODEL_RANK = [
+    'F-150', 'F-100', 'F-250', 'F-350', 'Mustang', 'Bronco', 'Ranger', 'Explorer', 'Crown Victoria',
+    'Expedition', 'Super Duty', 'F-450', 'Thunderbird', 'Taurus', 'Econoline', 'E-150', 'E-250', 'E-350',
+    'Excursion', 'Bronco II', 'Escape', 'Focus', 'Fusion', 'Edge', 'Flex', 'Escort', 'Galaxie', 'Fairlane',
+    'Torino', 'Falcon', 'Maverick', 'Ranchero', 'LTD', 'Granada', 'Fairmont', 'Pinto', 'Courier',
+    'Grand Marquis', 'Cougar', 'Town Car', 'Continental', 'Mark', 'Navigator', 'Mountaineer', 'Marauder',
+    'Windstar', 'Freestar', 'Aerostar', 'Probe', 'Tempo', 'Contour', 'Sable', 'Topaz', 'Mystique',
+    'Villager', 'Tracer', 'Lynx', 'Zephyr', 'Marquis', 'Capri'
+  ];
+  function modelRank(model) {
+    const m = String(model).toLowerCase();
+    // Exact match first, then "starts with" (so "F-150 Heritage" counts as F-150)
+    let i = MODEL_RANK.findIndex(x => x.toLowerCase() === m);
+    if (i < 0) i = MODEL_RANK.findIndex(x => m.startsWith(x.toLowerCase() + ' '));
+    return i < 0 ? 999 : i;
+  }
+  function yearSpan(years) {
+    const [a, b] = String(years).split('-').map(Number);
+    return (b || a) - a + 1;
+  }
+  // The vehicle to name in the title: most popular, then the widest year range
+  function titleVehicle(fits) {
+    if (!fits || !fits.length) return null;
+    return fits.slice().sort((x, y) => modelRank(x.model) - modelRank(y.model) || yearSpan(y.years) - yearSpan(x.years))[0];
+  }
+
   function titleFor(entry, opts = {}) {
     let name = String(entry.name || '').replace(/\s*\(([^)]*)\)/g, (m, inner) => ' ' + shortEngines(inner).replace(/,\s*/g, '/'));
     name = name.replace(/^\s*(Ford\s+)?(OEM\s+)?(NOS\s+)?/i, '').trim();
     const words = optionWords(opts);
-    const f = entry.fits[0];
+    const f = titleVehicle(entry.fits);
     const fitsParts = f ? [` Fits ${f.years} ${f.make} ${f.model}`, ` Fits ${f.years} ${f.model}`, ` ${f.years} ${f.model}`, ''] : [''];
     // Keep as many side/color words as fit; drop the "Fits..." part before dropping those
     for (let n = words.length; n >= 0; n--) {
@@ -1414,7 +1556,10 @@
 
   function descriptionFor(entry) {
     const fitLines = entry.fits.map(f => `${f.make} ${f.model} (${f.years})`).join(', ');
-    return `Genuine OEM ${entry.name}, part number ${entry.oem}. Confirmed fitment: ${fitLines}.`;
+    let text = `Genuine OEM ${entry.name}, part number ${entry.oem}.`;
+    if (fitLines) text += ` Confirmed fitment: ${fitLines}.`;
+    if (entry.buyerNotes) text += ` ${entry.buyerNotes}`;
+    return text;
   }
 
   function vehicleYears(fits) {
@@ -1438,14 +1583,15 @@
     if (photos.some(p => p.status === 'uploading')) return { error: 'Wait a moment for the photos to finish uploading.' };
     if (photos.some(p => p.status === 'failed')) return { error: 'A photo failed to upload. Retry it (\u21bb) or remove it (\u00d7).' };
     const imageUrls = photos.map(p => p.url);
-    const known = skuFor(entry.oem);
+    const opts = getOptions();
+    const key = partKey(entry.oem, opts);
+    const known = skuFor(key);
     const slot = nextSlot();
     const sku = known || makeSku(entry.oem, slot);
     const firstMake = entry.fits[0] ? entry.fits[0].make : 'Ford';
     const brand = /^(Ford|Mercury|Lincoln|Edsel)$/i.test(firstMake) ? 'Ford' : firstMake;
-    const opts = getOptions();
     const aspects = Object.assign({}, optionAspects(opts), details.aspects);   // required details win
-    return { entry, price, cat, details, aspects, opts, imageUrls, known, slot, sku, brand };
+    return { entry, price, cat, details, aspects, opts, key, imageUrls, known, slot, sku, brand };
   }
 
   function previewRow(label, content) {
@@ -1462,9 +1608,10 @@
   function renderPreview(L) {
     const body = document.getElementById('previewBody');
     body.innerHTML = '';
+    const vLabel = variantLabel(L.opts);
     body.appendChild(previewRow('SKU / box', L.known
-      ? `${L.known} (already listed). Pushing adds 1 to its quantity, and this copy goes in Box ${L.slot.box} (#${L.slot.spot} of ${L.slot.size}).`
-      : `${L.sku}, goes in Box ${L.slot.box} (#${L.slot.spot} of ${L.slot.size})`));
+      ? `${L.known} (${vLabel ? vLabel + ' version ' : ''}already listed). Pushing adds 1 to its quantity, and this copy goes in Box ${L.slot.box} (#${L.slot.spot} of ${L.slot.size}).`
+      : `${L.sku}${vLabel ? ' (new listing for the ' + vLabel + ' version)' : ''}, goes in Box ${L.slot.box} (#${L.slot.spot} of ${L.slot.size})`));
     body.appendChild(previewRow('Price', `$${Number(L.price).toFixed(2)}`));
     body.appendChild(previewRow('Shipping & returns', 'From your eBay business policies (shipping, payment, returns) set in Netlify'));
     body.appendChild(previewRow('Condition', 'New'));
@@ -1576,8 +1723,9 @@
       if (labelScanner) labelScanner.pauseAuto(false);
 
       {
-        if (!L.known) rememberSku(L.entry.oem, L.sku);
-        whereAdd(L.entry.oem, L.slot.box);
+        if (!L.known) rememberSku(L.key, L.sku);
+        const vLabel = variantLabel(L.opts);
+        whereAdd(L.entry.oem, vLabel ? `${L.slot.box} ${vLabel}` : L.slot.box);
         const s = boxState();
         s.pushed += 1;
         saveBoxState(s);
@@ -1668,3 +1816,4 @@
 </script>
 </body>
 </html>
+
