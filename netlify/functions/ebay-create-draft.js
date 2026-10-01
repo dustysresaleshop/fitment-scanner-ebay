@@ -1,4 +1,5 @@
 const { getAccessToken, apiBase } = require('./utils/ebay-auth');
+const { requireAppKey } = require('./utils/app-auth');
 
 const reply = (statusCode, obj) => ({
   statusCode,
@@ -31,6 +32,9 @@ function expandYears(yearsStr) {
 }
 
 exports.handler = async (event) => {
+  const denied = requireAppKey(event);   // app password check
+  if (denied) return denied;
+
   let step = 'start';
   try {
     const { sku, title, description, oem, price, fits, categoryId, brand, aspects: extraAspects, imageUrls } = JSON.parse(event.body || '{}');
