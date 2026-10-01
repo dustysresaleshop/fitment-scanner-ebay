@@ -122,6 +122,14 @@
   .box-buttons { display: flex; gap: 8px; }
 
   /* eBay category picker */
+  /* Lock screen */
+  .lock:not(.hidden) { position: fixed; inset: 0; z-index: 1000; background: var(--bg); display: flex; align-items: center; justify-content: center; padding: 16px; }
+  .lock-box { width: 100%; max-width: 360px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px; }
+  .lock-box h1 { margin-bottom: 14px; }
+  .lock-box input[type="password"] { width: 100%; background: var(--panel-2); border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 12px; font-size: 15px; }
+  .lock-box .btn-primary { margin-top: 12px; }
+  .lock-btn { float: right; }
+
   /* Optional side / position / color */
   .opt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .opt-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
@@ -165,8 +173,19 @@
 </style>
 </head>
 <body>
+<div class="lock hidden" id="lockScreen" role="dialog" aria-modal="true" aria-labelledby="lockTitle">
+  <div class="lock-box">
+    <div class="eyebrow">FITMENT SCANNER</div>
+    <h1 id="lockTitle">Enter app password</h1>
+    <input type="password" id="lockInput" autocomplete="current-password" aria-label="App password">
+    <label class="enhance-check"><input type="checkbox" id="lockRemember" checked> Remember on this computer</label>
+    <button class="btn-primary" id="lockBtn">Unlock</button>
+    <div class="status" id="lockStatus"></div>
+  </div>
+</div>
 <div class="wrap">
   <header>
+    <button class="btn-copy lock-btn" id="lockAppBtn" title="Lock the app on this computer">Lock</button>
     <div class="eyebrow">FITMENT SCANNER — PROTOTYPE</div>
     <h1>Scan a part, get its fitment</h1>
     <div class="sub">Scan the OEM barcode on the part, or key in the part number. Mock catalog for demo purposes.</div>
@@ -324,6 +343,71 @@
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
 <script src="webcam-scanner.js"></script>
 <script>
+  // ---- App password: every request to the app's functions carries it ----
+  const KEY_STORE = 'app-key';
+  const lockScreen = document.getElementById('lockScreen');
+  const lockInput = document.getElementById('lockInput');
+  const lockStatus = document.getElementById('lockStatus');
+  const lockBtn = document.getElementById('lockBtn');
+  let appKey = '';
+  try { appKey = localStorage.getItem(KEY_STORE) || sessionStorage.getItem(KEY_STORE) || ''; } catch (e) {}
+
+  function forgetKey() {
+    appKey = '';
+    try { localStorage.removeItem(KEY_STORE); sessionStorage.removeItem(KEY_STORE); } catch (e) {}
+  }
+  function showLock(msg) {
+    lockScreen.classList.remove('hidden');
+    lockStatus.textContent = msg || '';
+    lockStatus.className = 'status' + (msg ? ' err' : '');
+    setTimeout(() => lockInput.focus(), 50);
+  }
+
+  async function apiFetch(url, opts = {}) {
+    const headers = Object.assign({}, opts.headers || {}, { 'x-app-key': encodeURIComponent(appKey) });
+    const resp = await fetch(url, Object.assign({}, opts, { headers }));
+    if (resp.status === 401 || resp.status === 503) {
+      let d = {};
+      try { d = await resp.clone().json(); } catch (e) {}
+      if (d.locked) { forgetKey(); showLock(d.message); }
+    }
+    return resp;
+  }
+
+  async function tryUnlock() {
+    const k = lockInput.value;
+    if (!k) { lockInput.focus(); return; }
+    lockBtn.disabled = true;
+    lockStatus.textContent = 'Checking\u2026';
+    lockStatus.className = 'status';
+    try {
+      const r = await fetch('/.netlify/functions/fpg-lookup?ping=1', { headers: { 'x-app-key': encodeURIComponent(k) } });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok && d.ok) {
+        appKey = k;
+        try {
+          if (document.getElementById('lockRemember').checked) localStorage.setItem(KEY_STORE, k);
+          else sessionStorage.setItem(KEY_STORE, k);
+        } catch (e) {}
+        lockInput.value = '';
+        lockScreen.classList.add('hidden');
+      } else {
+        lockStatus.textContent = d.message || 'Wrong password.';
+        lockStatus.className = 'status err';
+        lockInput.select();
+      }
+    } catch (e) {
+      lockStatus.textContent = 'Could not check the password. Check your connection.';
+      lockStatus.className = 'status err';
+    } finally {
+      lockBtn.disabled = false;
+    }
+  }
+  lockBtn.addEventListener('click', tryUnlock);
+  lockInput.addEventListener('keydown', e => { if (e.key === 'Enter') tryUnlock(); });
+  document.getElementById('lockAppBtn').addEventListener('click', () => { forgetKey(); showLock('The app is locked on this computer.'); });
+  if (!appKey) showLock();
+
   // ---- Mock OEM fitment catalog (1:1 clean lookups only, v1 scope) ----
   const CATALOG = {
     "GM-15891234": {
@@ -727,7 +811,7 @@
     try {
       let data = cacheGet(pn);
       if (!data) {
-        const resp = await fetch('/.netlify/functions/fpg-lookup?pn=' + encodeURIComponent(pn));
+        const resp = await apiFetch('/.netlify/functions/fpg-lookup?pn=' + encodeURIComponent(pn));
         data = await resp.json();
         if (data.found) cacheSet(pn, data);
       }
@@ -987,7 +1071,7 @@
     if (!q) { catMsg(saved ? '' : 'Search for a category below.'); return; }
     catMsg('Finding eBay categories\u2026');
     try {
-      const resp = await fetch('/.netlify/functions/ebay-category?q=' + encodeURIComponent(q));
+      const resp = await apiFetch('/.netlify/functions/ebay-category?q=' + encodeURIComponent(q));
       const data = await resp.json();
       if (reqId !== catRequest) return;
       if (!resp.ok) { catMsg(data.error || 'Category search failed.', 'err'); return; }
@@ -1034,7 +1118,7 @@
     loadedAspectCat = '';
     if (!categoryId) return;
     try {
-      const resp = await fetch('/.netlify/functions/ebay-category?aspects=' + encodeURIComponent(categoryId));
+      const resp = await apiFetch('/.netlify/functions/ebay-category?aspects=' + encodeURIComponent(categoryId));
       const data = await resp.json();
       if (reqId !== aspectRequest) return;
       if (!resp.ok) { loadedAspectCat = categoryId; catMsg(data.error || 'Could not load the details eBay requires.', 'err'); return; }
@@ -1169,7 +1253,7 @@
     p.status = 'uploading'; p.error = '';
     renderPhotos();
     try {
-      const resp = await fetch('/.netlify/functions/ebay-upload-image', {
+      const resp = await apiFetch('/.netlify/functions/ebay-upload-image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image: p.data })
@@ -1472,7 +1556,7 @@
     pushStatus.textContent = 'Sending to eBay...';
     pushStatus.className = 'status';
     try {
-      const resp = await fetch('/.netlify/functions/ebay-create-draft', {
+      const resp = await apiFetch('/.netlify/functions/ebay-create-draft', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1532,7 +1616,7 @@
     status.textContent = 'Publishing to eBay...';
     status.className = 'status';
     try {
-      const resp = await fetch('/.netlify/functions/ebay-publish-offer', {
+      const resp = await apiFetch('/.netlify/functions/ebay-publish-offer', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ offerId })
