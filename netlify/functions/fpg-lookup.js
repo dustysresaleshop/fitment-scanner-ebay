@@ -37,6 +37,8 @@ async function fetchPart(pn) {
 
   const descRow = html.match(/<td>Part Description<\/td>\s*<td>([\s\S]*?)<\/td>/i);
   const description = descRow ? decode(descRow[1]) : '';
+  const noteRow = html.match(/<td>Manufacturer Note<\/td>\s*<td>([\s\S]*?)<\/td>/i);
+  const note = noteRow ? decode(noteRow[1]).replace(/\s+,/g, ',') : '';
 
   // Fitment table: Year Make Model | Engine | Option details
   const rows = [];
@@ -48,15 +50,15 @@ async function fetchPart(pn) {
         const t = td[1].match(/title="([^"]*)"/);
         return decode(t ? t[1] : td[1]);
       });
-      const ymm = (cells[0] || '').match(/^(\d{4})\s+(\S+)\s+(.+)$/);
+      // "1995 Ford Thunderbird" or a range like "2000-2006 Mercury Grand Marquis"
+      const ymm = (cells[0] || '').match(/^(\d{4})(?:\s*[-\u2013]\s*(\d{4}))?\s+(\S+)\s+(.+)$/);
       if (!ymm) continue;
-      rows.push({
-        year: Number(ymm[1]),
-        make: ymm[2],
-        model: ymm[3],
-        engines: (cells[1] || '').split(',').map(e => e.trim()).filter(Boolean),
-        options: cells[2] || ''
-      });
+      const first = Number(ymm[1]);
+      const last = ymm[2] ? Number(ymm[2]) : first;
+      const engines = (cells[1] || '').split(',').map(e => e.trim()).filter(Boolean);
+      for (let y = first; y <= last && y <= first + 60; y++) {
+        rows.push({ year: y, make: ymm[3], model: ymm[4], engines, options: cells[2] || '' });
+      }
     }
   }
 
@@ -68,11 +70,25 @@ async function fetchPart(pn) {
     mpn: product.mpn,
     name: description.split(';')[0].trim() || decode(product.name),
     description,
+    note,
     discontinued: /Discontinued/i.test(JSON.stringify(product.offers || {})),
     replacedBy: rep ? rep[1].toUpperCase() : null,
     sourceUrl: product.url || url,
     rows
   };
+}
+
+// Nearby suffixes for color/side/revision variants, closest first.
+// "AAE" -> AAD, AAF, AAC, AAG, AAB, ...   "C" -> B, D, A, E, ...
+function siblingSuffixes(suffix) {
+  if (!/^[A-Z]{1,3}$/.test(suffix)) return [];
+  const head = suffix.slice(0, -1);
+  const last = suffix.charCodeAt(suffix.length - 1);
+  const out = [];
+  for (let c = 65; c <= Math.max(72, last + 2); c++) {
+    if (c !== last) out.push({ s: head + String.fromCharCode(c), d: Math.abs(c - last) + (c > last ? 0.1 : 0) });
+  }
+  return out.sort((a, b) => a.d - b.d).map(x => x.s);
 }
 
 exports.handler = async (event) => {
@@ -92,12 +108,13 @@ exports.handler = async (event) => {
     let part = await fetchPart(pn);
     let fallbackFrom = null;
 
-    // Not listed? Try the standard -A version (oversize/variant parts often aren't listed)
+    // Not listed? Try sibling numbers (other colors, sides, or oversize versions), all at once
     const bits = pn.split('-');
-    if (!part && bits.length === 3 && bits[2] !== 'A') {
-      const basePn = `${bits[0]}-${bits[1]}-A`;
-      part = await fetchPart(basePn);
-      if (part) fallbackFrom = basePn;
+    if (!part && bits.length === 3) {
+      const tries = siblingSuffixes(bits[2]).slice(0, 8).map(s => `${bits[0]}-${bits[1]}-${s}`);
+      const results = await Promise.all(tries.map(t => fetchPart(t).catch(() => null)));
+      const i = results.findIndex(Boolean);
+      if (i >= 0) { part = results[i]; fallbackFrom = tries[i]; }
     }
 
     if (!part) return json({ found: false, requested: pn }, true);
