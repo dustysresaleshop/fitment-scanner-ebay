@@ -266,6 +266,7 @@
       if (busy || !video.videoWidth) return;
       busy = true; readBtn.disabled = true;
       setStatus('Reading label…');
+      const shot = snapshotCanvas(1600);                 // full picture at the moment of reading
       try {
         const worker = await getWorker();
         let text = (await worker.recognize(grabGuide(false))).data.text;
@@ -279,7 +280,7 @@
           setStatus('No part number found. Adjust the box or click Read label.');
           return;
         }
-        showResult(parsed, text);
+        showResult(parsed, text, shot);
       } catch (e) {
         setStatus('Could not read the label. Check your internet connection (the reader downloads once), then try again.');
       } finally {
@@ -287,8 +288,8 @@
       }
     }
 
-    function showResult(parsed, text) {
-      lastInfo = { raw: text, candidates: parsed.candidates };
+    function showResult(parsed, text, shot) {
+      lastInfo = { raw: text, candidates: parsed.candidates, photo: shot || null };
       pnInput.value = parsed.best || '';
       msgEl.textContent = parsed.best
         ? 'Check the number against the label, then press Enter.'
