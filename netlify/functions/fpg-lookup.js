@@ -2,6 +2,8 @@
 // Looks up a Ford part number on FordPartsGiant and returns its fitment.
 // Use: /.netlify/functions/fpg-lookup?pn=E9SZ-6507-B
 
+const { requireAppKey } = require('./utils/app-auth');
+
 const UA = 'Mozilla/5.0 (compatible; DustysResaleShop-FitmentLookup/1.0)';
 
 function decode(s) {
@@ -92,6 +94,12 @@ function siblingSuffixes(suffix) {
 }
 
 exports.handler = async (event) => {
+  const denied = requireAppKey(event);   // app password check
+  if (denied) return denied;
+  if ((event.queryStringParameters || {}).ping) {
+    return { statusCode: 200, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ok: true }) };
+  }
+
   const pn = String((event.queryStringParameters || {}).pn || '').toUpperCase().trim();
   if (!/^[A-Z0-9-]{5,24}$/.test(pn)) {
     return { statusCode: 400, body: JSON.stringify({ found: false, error: 'Bad part number' }) };
@@ -99,8 +107,7 @@ exports.handler = async (event) => {
 
   const json = (obj, cache) => ({
     statusCode: 200,
-    headers: Object.assign({ 'Content-Type': 'application/json' },
-      cache ? { 'Netlify-CDN-Cache-Control': 'public, s-maxage=604800' } : {}),
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
     body: JSON.stringify(obj)
   });
 
