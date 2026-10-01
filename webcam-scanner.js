@@ -101,6 +101,11 @@
   .ws-msg { color:var(--ws-steel); margin:.5rem 0 0; }
   .ws-alts button { font-weight:500; padding:.3rem .6rem; border-width:1px; }
   .ws details { margin-top:.75rem; color:var(--ws-steel); }
+  .ws details.ws-settings { margin:0 0 .75rem; color:var(--ws-ink); }
+  .ws-settings summary { cursor:pointer; font-weight:600; }
+  .ws-controls { display:grid; gap:.65rem; margin-top:.65rem; }
+  .ws-control label { display:flex; justify-content:space-between; font-size:.9rem; margin-bottom:.15rem; }
+  .ws-control input[type=range] { width:100%; accent-color:var(--ws-blue); }
   .ws pre { white-space:pre-wrap; font-size:.85rem; margin:.4rem 0 0; }
   `;
 
@@ -145,6 +150,12 @@
           <select class="ws-cam" aria-label="Camera"></select>
           <label><input type="checkbox" class="ws-auto" checked> Read automatically when a box is set down</label>
         </div>
+        <details class="ws-settings">
+          <summary>Camera settings</summary>
+          <div class="ws-controls"></div>
+          <div class="ws-row"><button type="button" class="ws-reset">Reset (auto focus, exposure, and color)</button></div>
+          <p class="ws-msg ws-settings-msg"></p>
+        </details>
         <div class="ws-stage">
           <video class="ws-video" playsinline muted></video>
           <div class="ws-guide"></div>
@@ -171,6 +182,7 @@
     const statusEl = $('.ws-status'), readBtn = $('.ws-read');
     const resultEl = $('.ws-result'), pnInput = $('.ws-pn'), msgEl = $('.ws-msg');
     const altsEl = $('.ws-alts'), rawEl = $('.ws-raw');
+    const controlsEl = $('.ws-controls'), settingsMsg = $('.ws-settings-msg');
 
     let stream = null, busy = false, lastInfo = null, timer = null;
     let prevFrame = null, sawMotion = true, stillCount = 0;
@@ -181,19 +193,32 @@
 
     const setStatus = t => { statusEl.textContent = t; };
 
+    const savedCamera = () => { try { return localStorage.getItem('ws-camera') || ''; } catch (e) { return ''; } };
+
+    async function openCamera(id) {
+      const size = { width: { ideal: 1920 }, height: { ideal: 1080 } };
+      const video_ = id ? { deviceId: { exact: id }, ...size } : size;
+      return navigator.mediaDevices.getUserMedia({ video: video_, audio: false });
+    }
+
     async function startCamera(deviceId) {
       if (stream) stream.getTracks().forEach(t => t.stop());
-      const size = { width: { ideal: 1920 }, height: { ideal: 1080 } };
-      const video_ = deviceId ? { deviceId: { exact: deviceId }, ...size } : size;
+      const wanted = deviceId || savedCamera();
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: video_, audio: false });
+        stream = await openCamera(wanted);
       } catch (e) {
-        setStatus('Camera blocked or not found. Allow camera access in the browser, then reload.');
-        return;
+        try {
+          if (!wanted || deviceId) throw e;
+          stream = await openCamera('');           // remembered camera unplugged: use the default
+        } catch (e2) {
+          setStatus('Camera blocked or not found. Allow camera access in the browser, then reload.');
+          return;
+        }
       }
       video.srcObject = stream;
       await video.play();
       await listCameras();
+      setupControls(stream.getVideoTracks()[0]);
       setStatus(autoBox.checked ? 'Set a box under the camera' : 'Line up the part number in the yellow box');
     }
 
@@ -315,7 +340,11 @@
     $('.ws-again').addEventListener('click', () => { resultEl.hidden = true; read(false); });
     $('.ws-search').addEventListener('click', confirm);
     pnInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); confirm(); } });
-    camSel.addEventListener('change', () => startCamera(camSel.value));
+    camSel.addEventListener('change', () => {
+      try { localStorage.setItem('ws-camera', camSel.value); } catch (e) {}
+      startCamera(camSel.value);
+    });
+    $('.ws-reset').addEventListener('click', resetControls);
     autoBox.addEventListener('change', () => {
       sawMotion = true; stillCount = 0;
       setStatus(autoBox.checked ? 'Set a box under the camera' : 'Line up the part number in the yellow box');
@@ -325,16 +354,107 @@
     getWorker();                                          // start downloading the reader right away
     timer = setInterval(watch, 200);
 
+    // ---- Camera adjustments (whatever the camera lets the browser change) ----
+    const CONTROLS = [
+      ['brightness', 'Brightness'],
+      ['contrast', 'Contrast'],
+      ['saturation', 'Color saturation'],
+      ['sharpness', 'Sharpness'],
+      ['exposureCompensation', 'Exposure'],
+      ['exposureTime', 'Shutter (manual exposure)', 'exposureMode'],
+      ['colorTemperature', 'White balance (warmth)', 'whiteBalanceMode'],
+      ['focusDistance', 'Focus (manual)', 'focusMode'],
+      ['zoom', 'Zoom']
+    ];
+    let track = null;
+    let startValues = {};
+
+    const settingsKey = () => 'ws-cam-settings:' + ((track && track.getSettings().deviceId) || 'default');
+    function loadSettings() { try { return JSON.parse(localStorage.getItem(settingsKey())) || {}; } catch (e) { return {}; } }
+    function saveSettings(s) { try { localStorage.setItem(settingsKey(), JSON.stringify(s)); } catch (e) {} }
+
+    async function applySettings(obj) {
+      try { await track.applyConstraints({ advanced: [obj] }); return true; }
+      catch (e) { settingsMsg.textContent = 'The camera didn\u2019t accept that setting.'; return false; }
+    }
+
+    async function setupControls(t) {
+      track = t;
+      controlsEl.innerHTML = '';
+      settingsMsg.textContent = '';
+      if (!track || !track.getCapabilities) {
+        settingsMsg.textContent = 'This browser doesn\u2019t offer camera adjustments. Chrome or Edge usually do.';
+        return;
+      }
+      const saved = loadSettings();
+      if (Object.keys(saved).length) await applySettings(saved);   // your settings for this camera
+      const caps = track.getCapabilities();
+      const cur = track.getSettings();
+      startValues = {};
+      CONTROLS.forEach(([key, label, modeKey]) => {
+        const c = caps[key];
+        if (!c || typeof c.min !== 'number' || !(c.max > c.min)) return;
+        startValues[key] = cur[key];
+        const row = document.createElement('div');
+        row.className = 'ws-control';
+        const lab = document.createElement('label');
+        const name = document.createElement('span');
+        name.textContent = label;
+        const val = document.createElement('span');
+        lab.appendChild(name); lab.appendChild(val);
+        const range = document.createElement('input');
+        range.type = 'range';
+        range.min = c.min; range.max = c.max; range.step = c.step || 1;
+        range.value = cur[key] != null ? cur[key] : c.min;
+        range.setAttribute('aria-label', label);
+        val.textContent = range.value;
+        range.addEventListener('input', () => { val.textContent = range.value; });
+        range.addEventListener('change', async () => {
+          const s = loadSettings();
+          const change = { [key]: Number(range.value) };
+          if (modeKey && (caps[modeKey] || []).includes('manual')) { change[modeKey] = 'manual'; s[modeKey] = 'manual'; }
+          if (await applySettings(change)) { s[key] = Number(range.value); saveSettings(s); settingsMsg.textContent = ''; }
+        });
+        row.appendChild(lab); row.appendChild(range);
+        controlsEl.appendChild(row);
+      });
+      if (!controlsEl.children.length) settingsMsg.textContent = 'This camera doesn\u2019t offer adjustments through the browser.';
+    }
+
+    async function resetControls() {
+      if (!track || !track.getCapabilities) return;
+      const caps = track.getCapabilities();
+      const reset = {};
+      ['focusMode', 'exposureMode', 'whiteBalanceMode'].forEach(m => {
+        if ((caps[m] || []).includes('continuous')) reset[m] = 'continuous';
+      });
+      ['brightness', 'contrast', 'saturation', 'sharpness', 'exposureCompensation', 'zoom'].forEach(k => {
+        const c = caps[k];
+        if (c && typeof c.min === 'number' && c.max > c.min) {
+          reset[k] = k === 'zoom' ? c.min : (k === 'exposureCompensation' ? 0 : Math.round(((c.min + c.max) / 2) / (c.step || 1)) * (c.step || 1));
+        }
+      });
+      await applySettings(reset);
+      saveSettings({});
+      setupControls(track);
+    }
+
     // Full-frame photo for listings, scaled so the longest side is at most maxSide
-    function snapshot(maxSide = 1600, quality = 0.88) {
+    function snapshotCanvas(maxSide = 1600) {
       const vw = video.videoWidth, vh = video.videoHeight;
       if (!vw || !vh) return null;
       const scale = Math.min(1, maxSide / Math.max(vw, vh));
       const c = document.createElement('canvas');
       c.width = Math.round(vw * scale);
       c.height = Math.round(vh * scale);
-      c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
-      return c.toDataURL('image/jpeg', quality);
+      const ctx = c.getContext('2d');
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(video, 0, 0, c.width, c.height);
+      return c;
+    }
+    function snapshot(maxSide = 1600, quality = 0.92) {
+      const c = snapshotCanvas(maxSide);
+      return c ? c.toDataURL('image/jpeg', quality) : null;
     }
 
     function pauseAuto(paused) {
@@ -348,6 +468,7 @@
     return {
       read: () => read(false),
       snapshot,
+      snapshotCanvas,
       pauseAuto,
       destroy() {
         clearInterval(timer);
