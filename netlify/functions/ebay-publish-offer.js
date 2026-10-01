@@ -38,6 +38,42 @@ exports.handler = async (event) => {
     const accessToken = await getAccessToken();
     const base = apiBase();
 
+    const jsonHeaders = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Language': 'en-US',
+      'Accept-Language': 'en-US'
+    };
+
+    // Make the draft use your current policies (from Netlify) before going live,
+    // so a policy change doesn't require pushing the part again
+    step = 'refresh_policies';
+    const wanted = {};
+    if (process.env.EBAY_FULFILLMENT_POLICY_ID) wanted.fulfillmentPolicyId = process.env.EBAY_FULFILLMENT_POLICY_ID;
+    if (process.env.EBAY_PAYMENT_POLICY_ID) wanted.paymentPolicyId = process.env.EBAY_PAYMENT_POLICY_ID;
+    if (process.env.EBAY_RETURN_POLICY_ID) wanted.returnPolicyId = process.env.EBAY_RETURN_POLICY_ID;
+    if (Object.keys(wanted).length) {
+      const g = await fetch(`${base}/sell/inventory/v1/offer/${offerId}`, { headers: jsonHeaders });
+      if (g.ok) {
+        const offer = await g.json();
+        const have = offer.listingPolicies || {};
+        const differs = Object.keys(wanted).some(k => have[k] !== wanted[k]);
+        if (differs) {
+          // Send back only the fields eBay accepts when updating an offer
+          const keep = ['availableQuantity', 'categoryId', 'listingDescription', 'merchantLocationKey', 'pricingSummary',
+            'quantityLimitPerBuyer', 'secondaryCategoryId', 'storeCategoryNames', 'tax', 'listingDuration',
+            'includeCatalogProductDetails', 'hideBuyerDetails', 'lotSize', 'charity', 'extendedProducerResponsibility'];
+          const body = {};
+          keep.forEach(k => { if (offer[k] !== undefined) body[k] = offer[k]; });
+          body.listingPolicies = Object.assign({}, have, wanted);
+          const u = await fetch(`${base}/sell/inventory/v1/offer/${offerId}`, {
+            method: 'PUT', headers: jsonHeaders, body: JSON.stringify(body)
+          });
+          if (!u.ok && u.status !== 204) return reply(u.status, { step, message: summarize(await u.text()) });
+        }
+      }
+    }
+
     step = 'publish';
     const resp = await fetch(`${base}/sell/inventory/v1/offer/${offerId}/publish`, {
       method: 'POST',
