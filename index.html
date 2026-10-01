@@ -248,6 +248,7 @@
     <div id="webcam-scan"></div>
     <button class="btn-primary" id="labelBtn">Start label reader</button>
     <button class="btn-ghost" id="camLargeBtn">Enlarge camera view</button>
+    <label class="enhance-check"><input type="checkbox" id="autoShot"> Take a photo automatically when a part is scanned</label>
   </div>
 
     <div class="demo-codes">Try: <span data-code="GM-15891234">GM-15891234</span>, <span data-code="FRD-DG9Z8501AA">FRD-DG9Z8501AA</span>, <span data-code="TOY-8112002561">TOY-8112002561</span></div>
@@ -919,12 +920,18 @@
     return pn;
   }
 
-  async function lookup(rawCode) {
+  async function lookup(rawCode, opts = {}) {
     const key = normalize(rawCode);
     currentLookup = null;
     hideExtras();
     clearPhotos();
     if (labelScanner) labelScanner.pauseAuto(false);
+    // Automatic first photo: the picture the label was read from, or a snap of the camera right now
+    if (opts.userScan && document.getElementById('autoShot').checked) {
+      let c = opts.photoCanvas || null;
+      if (!c && labelScanner && labelScanner.snapshotCanvas) c = labelScanner.snapshotCanvas(1600);
+      if (c) addPhoto(finishPhoto(c));
+    }
 
     if (CATALOG[key]) { showResult(rawCode, CATALOG[key]); return; }
 
@@ -980,7 +987,7 @@
     document.getElementById('lookupBtn').addEventListener('click', () => {
     const v = document.getElementById('manualInput').value;
     if (v.trim()) {
-      lookup(v);
+      lookup(v, { userScan: true });
       document.getElementById('manualInput').value = '';
     }
   });
@@ -1038,9 +1045,9 @@
   async function startLabelReader() {
     if (scanning) await stopScanner();          // free the webcam from the barcode camera
     labelScanner = WebcamScanner.mount(document.getElementById('webcam-scan'), {
-      onConfirm: (partNumber) => {
+      onConfirm: (partNumber, info) => {
         document.getElementById('manualInput').value = partNumber;
-        lookup(partNumber);
+        lookup(partNumber, { userScan: true, photoCanvas: info && info.photo });
       }
     });
     labelBtn.textContent = 'Stop label reader';
@@ -1500,6 +1507,12 @@
     const canvas = labelScanner.snapshotCanvas ? labelScanner.snapshotCanvas(1600) : null;
     const shot = canvas ? finishPhoto(canvas) : labelScanner.snapshot();
     if (shot) { addPhoto(shot); photoMsg('Photo taken. It shows up above and uploads to eBay automatically.', 'ok'); }
+  });
+
+  const autoShotBox = document.getElementById('autoShot');
+  try { autoShotBox.checked = localStorage.getItem('auto-shot') !== 'off'; } catch (e) { autoShotBox.checked = true; }
+  autoShotBox.addEventListener('change', () => {
+    try { localStorage.setItem('auto-shot', autoShotBox.checked ? 'on' : 'off'); } catch (e) {}
   });
 
   // Enlarged camera view with Take photo / Done along the bottom
