@@ -413,13 +413,13 @@
 
   function cacheGet(pn) {
     try {
-      const c = JSON.parse(localStorage.getItem('fpg:v1:' + pn));
+      const c = JSON.parse(localStorage.getItem('fpg:v2:' + pn));
       if (c && Date.now() - c.t < 30 * 24 * 3600 * 1000) return c.data;
     } catch (e) {}
     return null;
   }
   function cacheSet(pn, data) {
-    try { localStorage.setItem('fpg:v1:' + pn, JSON.stringify({ t: Date.now(), data })); } catch (e) {}
+    try { localStorage.setItem('fpg:v2:' + pn, JSON.stringify({ t: Date.now(), data })); } catch (e) {}
   }
 
   function uniqueEngines(rows) {
@@ -469,7 +469,8 @@
       if (warn) d.className = 'warn';
       box.appendChild(d);
     };
-    if (data.fallbackFrom) add(`${data.requested} isn't listed, so this shows fitment for ${data.fallbackFrom}. Only use it if your part is a variant of that part, like an oversize version.`, true);
+    if (data.fallbackFrom) add(`${data.requested} isn't listed, so this shows fitment for ${data.fallbackFrom}. Only use it if your part is a variant of that part (a different color, side, or oversize version). Check your box for the side and color.`, true);
+    if (data.note) add(`FordPartsGiant note${data.fallbackFrom ? ' for ' + data.fallbackFrom : ''}: ${data.note}`, !!data.fallbackFrom);
     if (data.redirectedTo) add(`FordPartsGiant sent this to ${data.redirectedTo}, which may be a replacement number. Double-check before listing.`, true);
     if (data.replacedBy) add(`Replaced by ${data.replacedBy}.`, true);
     add(`Source: FordPartsGiant${data.discontinued ? ' · discontinued (NOS)' : ''}. Their catalog isn't guaranteed, so give it a quick check.`);
