@@ -124,6 +124,24 @@
   .box-buttons { display: flex; gap: 8px; }
 
   /* eBay category picker */
+  /* Wider layout on computer screens (bigger camera view) */
+  @media (min-width: 900px) { .wrap { max-width: 860px; } }
+
+  /* Live view brightness (photos get the same adjustment) */
+  #webcam-scan .ws-video { filter: brightness(var(--cam-bright, 1)); }
+
+  /* Enlarged camera view */
+  body.cam-large #webcam-scan .ws-stage { position: fixed; top: 0; left: 0; right: 0; bottom: 76px; z-index: 900; border-radius: 0;
+    background: #000; display: flex; align-items: center; justify-content: center; }
+  body.cam-large #webcam-scan .ws-video { width: 100%; height: 100%; object-fit: contain; }
+  body.cam-large #webcam-scan .ws-guide { display: none; }
+  .cam-bar { display: none; }
+  body.cam-large .cam-bar { display: flex; position: fixed; left: 0; right: 0; bottom: 0; height: 76px; z-index: 901; background: var(--panel);
+    border-top: 1px solid var(--line); gap: 10px; padding: 12px 16px; align-items: center; justify-content: center; }
+  body.cam-large .cam-bar button { width: auto; min-width: 150px; margin-top: 0; }
+  .bright-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: 13px; color: var(--muted); }
+  .bright-row input[type=range] { flex: 1; accent-color: var(--yellow); }
+
   /* Lock screen */
   .lock:not(.hidden) { position: fixed; inset: 0; z-index: 1000; background: var(--bg); display: flex; align-items: center; justify-content: center; padding: 16px; }
   .lock-box { width: 100%; max-width: 360px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px; }
@@ -185,6 +203,11 @@
     <div class="status" id="lockStatus"></div>
   </div>
 </div>
+<div class="cam-bar" role="toolbar" aria-label="Camera">
+  <button class="btn-primary" id="camBarPhoto">Take photo</button>
+  <button class="btn-ghost" id="camBarDone">Done</button>
+  <span class="part-meta" id="camBarCount"></span>
+</div>
 <div class="wrap">
   <header>
     <button class="btn-copy lock-btn" id="lockAppBtn" title="Lock the app on this computer">Lock</button>
@@ -224,6 +247,7 @@
     <h2>Read label with webcam (no barcode)</h2>
     <div id="webcam-scan"></div>
     <button class="btn-primary" id="labelBtn">Start label reader</button>
+    <button class="btn-ghost" id="camLargeBtn">Enlarge camera view</button>
   </div>
 
     <div class="demo-codes">Try: <span data-code="GM-15891234">GM-15891234</span>, <span data-code="FRD-DG9Z8501AA">FRD-DG9Z8501AA</span>, <span data-code="TOY-8112002561">TOY-8112002561</span></div>
@@ -288,6 +312,11 @@
         <button class="btn-ghost" id="photoFileBtn">Add from computer</button>
       </div>
       <label class="enhance-check"><input type="checkbox" id="photoEnhance"> Auto-enhance photos (brighter, truer colors)</label>
+      <div class="bright-row">
+        <label for="photoBright">Photo brightness</label>
+        <input type="range" id="photoBright" min="-40" max="80" step="5" value="0">
+        <span id="photoBrightVal">0</span>
+      </div>
       <input type="file" id="photoFile" accept="image/*" multiple hidden>
       <div class="status" id="photoStatus"></div>
     </div>
@@ -1355,6 +1384,7 @@
       photoStrip.appendChild(card);
     });
     photoBtn.disabled = photos.length >= MAX_PHOTOS;
+    document.getElementById('camBarCount').textContent = `${photos.length} photo${photos.length === 1 ? '' : 's'}`;
   }
 
   async function uploadPhoto(p) {
@@ -1414,7 +1444,35 @@
     return c;
   }
 
+  // Brightness: works with any camera (it's done by the app, not the camera)
+  const brightSlider = document.getElementById('photoBright');
+  function applyBrightPreview() {
+    const v = Number(brightSlider.value);
+    document.getElementById('photoBrightVal').textContent = v > 0 ? '+' + v : String(v);
+    document.documentElement.style.setProperty('--cam-bright', String(1 + v / 100));
+  }
+  try { brightSlider.value = localStorage.getItem('photo-bright') || '0'; } catch (e) {}
+  applyBrightPreview();
+  brightSlider.addEventListener('input', () => {
+    applyBrightPreview();
+    try { localStorage.setItem('photo-bright', brightSlider.value); } catch (e) {}
+  });
+  // Lifts dark areas more than bright ones (gamma), so highlights don't blow out
+  function brightenCanvas(c, v) {
+    if (!v) return c;
+    const gamma = v > 0 ? 1 / (1 + v / 60) : 1 + (-v) / 60;
+    const map = new Uint8ClampedArray(256);
+    for (let i = 0; i < 256; i++) map[i] = Math.round(255 * Math.pow(i / 255, gamma));
+    const ctx = c.getContext('2d');
+    const img = ctx.getImageData(0, 0, c.width, c.height);
+    const d = img.data;
+    for (let i = 0; i < d.length; i += 4) { d[i] = map[d[i]]; d[i + 1] = map[d[i + 1]]; d[i + 2] = map[d[i + 2]]; }
+    ctx.putImageData(img, 0, 0);
+    return c;
+  }
+
   function finishPhoto(canvas) {
+    brightenCanvas(canvas, Number(brightSlider.value));
     if (enhanceBox.checked) enhanceCanvas(canvas);
     return canvas.toDataURL('image/jpeg', 0.92);
   }
@@ -1442,6 +1500,21 @@
     const canvas = labelScanner.snapshotCanvas ? labelScanner.snapshotCanvas(1600) : null;
     const shot = canvas ? finishPhoto(canvas) : labelScanner.snapshot();
     if (shot) { addPhoto(shot); photoMsg('Photo taken. It shows up above and uploads to eBay automatically.', 'ok'); }
+  });
+
+  // Enlarged camera view with Take photo / Done along the bottom
+  document.getElementById('camLargeBtn').addEventListener('click', async () => {
+    if (!(await ensureCamera())) { alert('The camera isn\u2019t ready yet. Click "Start label reader" and check that it shows a picture.'); return; }
+    if (labelScanner) labelScanner.pauseAuto(true);
+    document.body.classList.add('cam-large');
+    renderPhotos();
+  });
+  function closeLargeCam() { document.body.classList.remove('cam-large'); }
+  document.getElementById('camBarDone').addEventListener('click', closeLargeCam);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLargeCam(); });
+  document.getElementById('camBarPhoto').addEventListener('click', () => {
+    if (resultPanel.classList.contains('hidden')) { alert('Look up a part first, then take its photos.'); return; }
+    photoBtn.click();
   });
 
   document.getElementById('photoFileBtn').addEventListener('click', () => document.getElementById('photoFile').click());
@@ -1816,4 +1889,3 @@
 </script>
 </body>
 </html>
-
