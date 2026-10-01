@@ -92,6 +92,10 @@
   #webcam-scan .ws-pn { background: var(--panel); color: var(--text); border-color: var(--line);
                         font-family: 'IBM Plex Mono', monospace; font-size: 22px; }
   #webcam-scan:not(:empty) { margin-bottom: 10px; }
+  #webcam-scan .ws details.ws-settings { color: var(--text); }
+  #webcam-scan .ws-control input[type=range] { accent-color: var(--yellow); }
+  #webcam-scan .ws-settings-msg { color: var(--muted); }
+  .enhance-check { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--muted); margin-top: 8px; cursor: pointer; }
 
   /* Automatic lookup: source notes and engine picker */
   .lookup-note { margin-top: 10px; font-size: 12px; color: var(--muted); line-height: 1.45; }
@@ -232,6 +236,7 @@
         <button class="btn-ghost" id="photoBtn">Take photo with webcam</button>
         <button class="btn-ghost" id="photoFileBtn">Add from computer</button>
       </div>
+      <label class="enhance-check"><input type="checkbox" id="photoEnhance"> Auto-enhance photos (brighter, truer colors)</label>
       <input type="file" id="photoFile" accept="image/*" multiple hidden>
       <div class="status" id="photoStatus"></div>
     </div>
@@ -387,7 +392,7 @@
     draftPanel.classList.add('hidden');
     if (!entry) {
       resultPanel.classList.add('hidden');
-      setStatus(`No match for "${rawCode}". It's not in the catalog and doesn't look like a Ford part number.`, 'err');
+      setStatus(`No match for "${rawCode}". It doesn't look like a Ford part number. Use the research links below, or type the part number in by hand.`, 'err');
       return;
     }
     scanStatus.textContent = `Matched.`;
@@ -650,6 +655,18 @@
     lookup(manualPn);
   });
 
+  // Ford label barcodes often start with "P" (or "1P") meaning "part number".
+  // Try the code as-is first, since newer Ford numbers can really start with P.
+  function fordPartFrom(key) {
+    const parse = s => (window.WebcamScanner ? WebcamScanner.parseFordPartNumber(s).best : null);
+    let pn = parse(key);
+    if (!pn) {
+      const m = key.match(/^\d?P([A-Z0-9][A-Z0-9 =\-]{6,})$/);
+      if (m) pn = parse(m[1]);
+    }
+    return pn;
+  }
+
   async function lookup(rawCode) {
     const key = normalize(rawCode);
     currentLookup = null;
@@ -659,8 +676,12 @@
 
     if (CATALOG[key]) { showResult(rawCode, CATALOG[key]); return; }
 
-    const pn = window.WebcamScanner ? WebcamScanner.parseFordPartNumber(key).best : null;
-    if (!pn) { showResult(rawCode, null); return; }
+    const pn = fordPartFrom(key);
+    if (!pn) {
+      showResult(rawCode, null);
+      if (key) showResearch(key, false);   // still offer web searches for anything scanned
+      return;
+    }
 
     const saved = manualGet(pn);
     if (saved) { showSavedManual(pn, saved); return; }
@@ -1138,6 +1159,42 @@
     uploadPhoto(p);
   }
 
+  // Auto-enhance: stretch each color channel so whites look white and blacks look black
+  const enhanceBox = document.getElementById('photoEnhance');
+  try { enhanceBox.checked = localStorage.getItem('photo-enhance') !== 'off'; } catch (e) { enhanceBox.checked = true; }
+  enhanceBox.addEventListener('change', () => {
+    try { localStorage.setItem('photo-enhance', enhanceBox.checked ? 'on' : 'off'); } catch (e) {}
+  });
+
+  function enhanceCanvas(c) {
+    const ctx = c.getContext('2d');
+    const img = ctx.getImageData(0, 0, c.width, c.height);
+    const d = img.data;
+    const total = d.length / 4;
+    const maps = [0, 1, 2].map(ch => {
+      const hist = new Uint32Array(256);
+      for (let i = ch; i < d.length; i += 4) hist[d[i]]++;
+      let lo = 0, hi = 255, acc = 0;
+      for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc > total * 0.005) { lo = v; break; } }
+      acc = 0;
+      for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc > total * 0.005) { hi = v; break; } }
+      const map = new Uint8ClampedArray(256);
+      const range = hi - lo;
+      for (let v = 0; v < 256; v++) map[v] = range < 40 ? v : Math.round((v - lo) * 255 / range);
+      return map;
+    });
+    for (let i = 0; i < d.length; i += 4) {
+      d[i] = maps[0][d[i]]; d[i + 1] = maps[1][d[i + 1]]; d[i + 2] = maps[2][d[i + 2]];
+    }
+    ctx.putImageData(img, 0, 0);
+    return c;
+  }
+
+  function finishPhoto(canvas) {
+    if (enhanceBox.checked) enhanceCanvas(canvas);
+    return canvas.toDataURL('image/jpeg', 0.92);
+  }
+
   function clearPhotos() {
     photos = [];
     photoMsg('');
@@ -1158,7 +1215,8 @@
     photoMsg('');
     if (!(await ensureCamera())) { photoMsg('The webcam isn\u2019t ready. Check that the label reader shows a picture.', 'err'); return; }
     labelScanner.pauseAuto(true);
-    const shot = labelScanner.snapshot();
+    const canvas = labelScanner.snapshotCanvas ? labelScanner.snapshotCanvas(1600) : null;
+    const shot = canvas ? finishPhoto(canvas) : labelScanner.snapshot();
     if (shot) { addPhoto(shot); photoMsg('Photo taken. It shows up above and uploads to eBay automatically.', 'ok'); }
   });
 
@@ -1175,7 +1233,7 @@
         c.height = Math.round(img.naturalHeight * scale);
         c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
         URL.revokeObjectURL(url);
-        addPhoto(c.toDataURL('image/jpeg', 0.88));
+        addPhoto(finishPhoto(c));
       } catch (err) {
         photoMsg(`Couldn't open ${f.name}.`, 'err');
       }
