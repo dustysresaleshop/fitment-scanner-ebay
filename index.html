@@ -231,6 +231,10 @@
     </div>
   </div>
 
+  <div class="panel hidden" id="doneBanner" role="status">
+    <div class="status ok" id="doneText" style="margin-top:0;"></div>
+  </div>
+
   <div class="panel">
     <h2>Enter part number</h2>
     <div class="row">
@@ -1179,6 +1183,7 @@
   }
 
   async function lookup(rawCode, opts = {}) {
+    document.getElementById('doneBanner').classList.add('hidden');
     const key = normalize(rawCode);
     currentLookup = null;
     hideExtras();
@@ -2096,6 +2101,32 @@
     draftPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
 
+  // Part finished: clear the screen, show a summary at the top, and get ready for the next part
+  function finishPart(text, url) {
+    const done = document.getElementById('doneText');
+    done.textContent = text;
+    if (url) {
+      const a = document.createElement('a');
+      a.href = url; a.target = '_blank'; a.rel = 'noopener';
+      a.textContent = ' View listing';
+      a.style.color = 'var(--yellow)';
+      done.appendChild(a);
+    }
+    document.getElementById('doneBanner').classList.remove('hidden');
+    [resultPanel, draftPanel, researchPanel, manualPanel].forEach(el => el.classList.add('hidden'));
+    hideExtras();
+    clearPhotos();
+    resetPublish();
+    document.getElementById('pushStatus').textContent = '';
+    document.getElementById('draftStatus').textContent = '';
+    scanStatus.textContent = '';
+    currentLookup = null;
+    if (labelScanner) labelScanner.pauseAuto(false);
+    if (document.body.classList.contains('cam-large')) document.body.classList.remove('cam-large');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    setTimeout(() => document.getElementById('manualInput').focus(), 300);
+  }
+
   async function sendToEbay() {
     const pushStatus = document.getElementById('pushStatus');
     const fail = msg => { pushStatus.textContent = msg; pushStatus.className = 'status err'; };
@@ -2164,6 +2195,10 @@
       }
       pushStatus.className = 'status ok';
 
+      if (L.known) {
+        finishPart(pushStatus.textContent);          // existing listing: nothing left to do
+        return;
+      }
       if (data.offerId) {
         publishBtnEl.dataset.offerId = data.offerId;
         publishBtnEl.dataset.sku = L.sku;
@@ -2214,6 +2249,8 @@
         }
         btn.classList.add('hidden');
         reviewWrap.classList.add('hidden');
+        const pushed = document.getElementById('pushStatus').textContent;
+        finishPart(`${data.message || 'Published.'} ${pushed}`.trim(), data.listingUrl);
       } else {
         status.className = 'status err';
         status.textContent = `Could not publish (${data.step || 'error'} ${resp.status}): ${data.message || raw.slice(0, 600)}`;
