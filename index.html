@@ -568,6 +568,7 @@
     renderFits(rawCode, entry);
     renderWhere(entry.oem);
     resetOptions();
+    preselectPreviousVariant(entry.oem);
     prefillPrice();
     loadCategories(entry.name, entry.oem);
     document.getElementById('priceInput').value = '';
@@ -691,12 +692,21 @@
 
   // ---- Your parts database (on Netlify) ----
   async function dbGet(pn) {
-    try {
-      const r = await apiFetch('/.netlify/functions/parts-db?pn=' + encodeURIComponent(pn));
-      if (!r.ok) return null;
-      const d = await r.json();
-      return d.found ? d.record : null;
-    } catch (e) { return null; }
+    const get = async p => {
+      try {
+        const r = await apiFetch('/.netlify/functions/parts-db?pn=' + encodeURIComponent(p));
+        if (!r.ok) return null;
+        const d = await r.json();
+        return d.found ? d.record : null;
+      } catch (e) { return null; }
+    };
+    let rec = await get(pn);
+    const old = oldSpelling(pn);
+    if (!rec && old) {
+      rec = await get(old);
+      if (rec) { try { rec = await dbSave(pn, rec); } catch (e) {} }   // store it under the correct spelling
+    }
+    return rec;
   }
   async function dbSave(pn, record) {
     const r = await apiFetch('/.netlify/functions/parts-db', {
@@ -1350,7 +1360,7 @@
   // Remember the SKU each part number was first listed under, so extra copies
   // add to that listing's quantity instead of creating duplicate listings.
   function skuFor(oem) {
-    try { return localStorage.getItem('sku-of:v1:' + oem); } catch (e) { return null; }
+    try { return localStorage.getItem('sku-of:v1:' + oem) || (oldSpelling(oem) && localStorage.getItem('sku-of:v1:' + oldSpelling(oem))) || null; } catch (e) { return null; }
   }
   function rememberSku(oem, sku) {
     try { localStorage.setItem('sku-of:v1:' + oem, sku); } catch (e) {}
@@ -1359,7 +1369,11 @@
 
   // Which boxes each part is stored in, e.g. { A: 2, B: 1 }
   function whereGet(oem) {
-    try { return JSON.parse(localStorage.getItem('where:v1:' + oem)) || {}; } catch (e) { return {}; }
+    const read = k => { try { return JSON.parse(localStorage.getItem('where:v1:' + k)) || {}; } catch (e) { return {}; } };
+    const w = read(oem);
+    const old = oldSpelling(oem) ? read(oldSpelling(oem)) : {};
+    Object.keys(old).forEach(b => { w[b] = (w[b] || 0) + old[b]; });
+    return w;
   }
   function whereAdd(oem, box) {
     const w = whereGet(oem);
@@ -1426,7 +1440,7 @@
   let catRequest = 0;
 
   function catFor(oem) {
-    try { return JSON.parse(localStorage.getItem('cat-of:v1:' + oem)); } catch (e) { return null; }
+    try { return JSON.parse(localStorage.getItem('cat-of:v1:' + oem) || (oldSpelling(oem) && localStorage.getItem('cat-of:v1:' + oldSpelling(oem))) || 'null'); } catch (e) { return null; }
   }
   function rememberCat(oem, cat) {
     try { localStorage.setItem('cat-of:v1:' + oem, JSON.stringify(cat)); } catch (e) {}
@@ -1819,12 +1833,32 @@
   function partKey(oem, o) {
     return (o && (o.side || o.position || o.color)) ? `${oem}|${o.side || ''}|${o.position || ''}|${o.color || ''}` : oem;
   }
+  // Parts saved before the O-vs-0 fix may be stored as "FOAZ..." instead of "F0AZ..."
+  function oldSpelling(key) {
+    return /^[BCDEF]0/.test(key) ? key[0] + 'O' + key.slice(2) : '';
+  }
   function savedPrice(key) {
-    try { return localStorage.getItem('price-of:v1:' + key) || ''; } catch (e) { return ''; }
+    try { return localStorage.getItem('price-of:v1:' + key) || (oldSpelling(key) && localStorage.getItem('price-of:v1:' + oldSpelling(key))) || ''; } catch (e) { return ''; }
   }
   function rememberPrice(key, price) {
     try { localStorage.setItem('price-of:v1:' + key, price); } catch (e) {}
   }
+  // If this part has only been listed one way (one side/position/color), select those options again
+  function preselectPreviousVariant(oem) {
+    let keys = [];
+    try {
+      const prefixes = ['sku-of:v1:' + oem + '|'];
+      if (oldSpelling(oem)) prefixes.push('sku-of:v1:' + oldSpelling(oem) + '|');
+      keys = Object.keys(localStorage).filter(k => prefixes.some(p => k.startsWith(p)));
+      if (skuFor(oem)) return;            // it was also listed with no options: leave them blank
+    } catch (e) { return; }
+    if (keys.length !== 1) return;          // none, or several versions: let you choose
+    const [, side, position, color] = keys[0].split('|');
+    optSide.value = side || '';
+    optPosition.value = position || '';
+    optColor.value = color || '';
+  }
+
   // Fill the price box with the last price used for this part, unless you've typed your own
   function prefillPrice() {
     const box = document.getElementById('priceInput');
