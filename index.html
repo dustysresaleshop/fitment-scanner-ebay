@@ -117,6 +117,7 @@
   .manual-grid input { min-width: 0; }
   #manualPanel textarea { min-height: 70px; }
   #mPaste { min-height: 90px; }
+  #mSmart { min-height: 110px; }
   table.fit td .btn-copy { padding: 4px 8px; font-size: 12px; }
 
   /* Storage boxes */
@@ -336,6 +337,10 @@
 
   <div class="panel hidden" id="manualPanel">
     <h2>Your database: <span class="code-chip" id="manualPn"></span></h2>
+    <label class="part-meta manual-label" for="mSmart">Paste what you found (a whole copied page is fine)</label>
+    <textarea id="mSmart" placeholder="On the page with the info, press Ctrl+A then Ctrl+C, and paste here"></textarea>
+    <button class="btn-copy" id="mSmartBtn">Fill in from pasted text</button>
+    <div class="status" id="mSmartStatus"></div>
     <label class="part-meta manual-label" for="manualName">Part name (add the engine here for engine parts)</label>
     <input type="text" id="manualName" placeholder="e.g. Intake Valve .015 Oversize 3.8L V6" autocomplete="off" style="width:100%;">
     <div class="part-meta manual-label">Add a vehicle</div>
@@ -820,6 +825,8 @@
     document.getElementById('mPrivateNotes').value = (saved && saved.privateNotes) || '';
     document.getElementById('mSource').value = (saved && saved.source) || '';
     document.getElementById('mPaste').value = '';
+    document.getElementById('mSmart').value = '';
+    document.getElementById('mSmartStatus').textContent = '';
     renderManualRows();
     mMsg('');
     document.getElementById('mDelete').classList.toggle('hidden', !saved);
@@ -863,6 +870,152 @@
     });
     return { rows, bad };
   }
+
+  // ---- Smart paste: pull vehicles, part name, package count, and link out of any pasted text ----
+  const MODEL_PATTERNS = [
+    // [pattern, make, model]  (longer / more specific names first)
+    [/\bF[-\s]?(100|150|250|350|450|500|550|600|650|700|750|800)\b/gi, 'Ford', m => 'F-' + m[1]],
+    [/\bE[-\s]?(100|150|250|350|450)\b/gi, 'Ford', m => 'E-' + m[1]],
+    [/\bBronco\s*(?:II|2)\b/gi, 'Ford', 'Bronco II'],
+    [/\bBroncos?\b/gi, 'Ford', 'Bronco'],
+    [/\bCrown\s+Vic(?:toria)?s?\b/gi, 'Ford', 'Crown Victoria'],
+    [/\bT-?Birds?\b|\bThunderbirds?\b/gi, 'Ford', 'Thunderbird'],
+    [/\bLTD\s+II\b/gi, 'Ford', 'LTD II'],
+    [/\bLTD\b/g, 'Ford', 'LTD'],
+    [/\bClub\s+Wagon\b/gi, 'Ford', 'Club Wagon'],
+    [/\bFive\s+Hundred\b/gi, 'Ford', 'Five Hundred'],
+    [/\bGrand\s+Marquis\b/gi, 'Mercury', 'Grand Marquis'],
+    [/\bTown\s+Car\b/gi, 'Lincoln', 'Town Car'],
+    [/\bMark\s+(V|VI|VII|VIII)\b/g, 'Lincoln', m => 'Mark ' + m[1]],
+    ...['Mustang', 'Ranger', 'Explorer', 'Expedition', 'Excursion', 'Aerostar', 'Windstar', 'Freestar', 'Econoline',
+        'Taurus', 'Galaxie', 'Fairlane', 'Torino', 'Falcon', 'Maverick', 'Pinto', 'Granada', 'Fairmont', 'Escort',
+        'Tempo', 'Probe', 'Contour', 'Focus', 'Fusion', 'Festiva', 'Aspire', 'Courier', 'Ranchero', 'Escape', 'Flex', 'Edge']
+      .map(n => [new RegExp('\\b' + n + 's?\\b', 'gi'), 'Ford', n]),
+    ...['Marquis', 'Cougar', 'Sable', 'Topaz', 'Tracer', 'Lynx', 'Mystique', 'Villager', 'Mountaineer', 'Monarch',
+        'Montego', 'Comet', 'Capri', 'Zephyr', 'Bobcat', 'Marauder', 'Milan']
+      .map(n => [new RegExp('\\b' + n + 's?\\b', 'gi'), 'Mercury', n]),
+    ...['Continental', 'Navigator', 'Aviator', 'Versailles', 'Blackwood']
+      .map(n => [new RegExp('\\b' + n + 's?\\b', 'gi'), 'Lincoln', n])
+  ];
+
+  function fullYear(y, other) {
+    if (y.length === 4) return Number(y);
+    const n = Number(y);
+    if (other && other.length === 4) return Number(other.slice(0, 2) + y.padStart(2, '0')); // "1966-72" -> 1972
+    return n >= 30 ? 1900 + n : 2000 + n;
+  }
+
+  function findModels(chunk) {
+    const found = [];
+    const taken = [];   // character ranges already used by a longer name
+    MODEL_PATTERNS.forEach(([re, make, model]) => {
+      re.lastIndex = 0;
+      let m;
+      while ((m = re.exec(chunk)) !== null) {
+        const s = m.index, e = s + m[0].length;
+        if (taken.some(([a, b]) => s < b && e > a)) continue;
+        taken.push([s, e]);
+        found.push({ make, model: typeof model === 'function' ? model(m) : model, pos: s });
+      }
+    });
+    return found.sort((a, b) => a.pos - b.pos);
+  }
+
+  function findYearRanges(chunk) {
+    const out = [];
+    const re = /(?<![\w-])((?:19|20)\d{2}|\d{2})\s*(?:-|to|thru|through)\s*((?:19|20)\d{2}|\d{2})(?![\w-])/gi;
+    let m;
+    while ((m = re.exec(chunk)) !== null) {
+      const a = fullYear(m[1], m[2]), b = fullYear(m[2], m[1]);
+      if (a >= 1930 && b <= 2035 && b >= a && b - a <= 40) out.push({ from: a, to: b, pos: m.index });
+    }
+    if (!out.length) {   // a single year, like "1995 Ford Thunderbird"
+      const one = chunk.match(/(?<![\w-])(19[3-9]\d|20[0-3]\d)(?![\w-])/);
+      if (one) out.push({ from: Number(one[1]), to: Number(one[1]), pos: one.index });
+    }
+    return out;
+  }
+
+  function smartParse(text) {
+    const result = { rows: [], name: '', pkg: '', source: '' };
+    const clean = String(text).replace(/[\u2013\u2014]/g, '-').replace(/\u00a0/g, ' ');
+
+    // 1) Tidy one-vehicle-per-line lists (FordPartsGiant, catalogs)
+    const lines = clean.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    const leftover = [];
+    lines.forEach(line => {
+      const { rows } = parseVehicleLines(line);
+      if (rows.length && findModels(line).length) result.rows.push(...rows);
+      else leftover.push(line);
+    });
+
+    // 2) Year ranges + model names anywhere else (titles, sentences)
+    leftover.join('\n').split(/[\n;]+|\.(?=\s|$)/).forEach(chunk => {
+      const models = findModels(chunk);
+      if (!models.length) return;
+      const ranges = findYearRanges(chunk);
+      if (!ranges.length) return;
+      models.forEach(md => {
+        // use the year range closest to this model name
+        const r = ranges.reduce((best, x) => Math.abs(x.pos - md.pos) < Math.abs(best.pos - md.pos) ? x : best);
+        result.rows.push({ make: md.make, model: md.model, years: r.from === r.to ? String(r.from) : `${r.from}-${r.to}` });
+      });
+    });
+
+    // remove duplicates
+    const seen = new Set();
+    result.rows = result.rows.filter(r => {
+      const k = `${r.make}|${r.model}|${r.years}`.toLowerCase();
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+
+    // 3) Part name
+    let m = clean.match(/Part\s+(?:Description|Name)\s*:?\s*([^\n;]{3,80})/i) || clean.match(/\bDescription\s*:\s*([^\n;]{3,80})/i);
+    if (!m) m = clean.match(/\bis an?\s+((?:[\w\/&'-]+\s+){1,8}?)(?:used|for|designed|that|which|found|on|in)\b/i);
+    if (m) {
+      result.name = m[1].replace(/\b(vintage|genuine|classic|original|oem|nos|new old stock|ford|motorcraft)\b/gi, '')
+        .replace(/\s+/g, ' ').trim()
+        .replace(/\b\w/g, c => c.toUpperCase());
+    }
+
+    // 4) Package count
+    m = clean.match(/\b(?:pkg|package|pack|set|box)\s+of\s+(\d{1,3})\b/i) || clean.match(/\b(\d{1,3})\s*(?:pcs|pieces|pc)\b/i);
+    if (m && Number(m[1]) > 1) result.pkg = `Package of ${m[1]}.`;
+
+    // 5) Link
+    m = clean.match(/https?:\/\/[^\s"'<>]+/i);
+    if (m) result.source = m[0];
+    return result;
+  }
+
+  document.getElementById('mSmartBtn').addEventListener('click', () => {
+    const box = document.getElementById('mSmart');
+    const status = document.getElementById('mSmartStatus');
+    const say = (t, k) => { status.textContent = t; status.className = 'status' + (k ? ' ' + k : ''); };
+    if (!box.value.trim()) { say('Paste some text first.', 'err'); return; }
+    const r = smartParse(box.value);
+    const notes = [];
+
+    const have = new Set(manualRows.map(x => `${x.make}|${x.model}|${x.years}`.toLowerCase()));
+    const added = r.rows.filter(x => !have.has(`${x.make}|${x.model}|${x.years}`.toLowerCase()));
+    added.forEach(x => manualRows.push(x));
+    renderManualRows();
+    notes.push(added.length ? `Added ${added.length} vehicle${added.length > 1 ? 's' : ''}` : 'No new vehicles found');
+
+    const nameBox = document.getElementById('manualName');
+    if (r.name) {
+      if (!nameBox.value.trim()) { nameBox.value = r.name; notes.push(`part name "${r.name}"`); }
+      else if (nameBox.value.trim().toLowerCase() !== r.name.toLowerCase()) notes.push(`(found the name "${r.name}", but kept yours)`);
+    }
+    const buyer = document.getElementById('mBuyerNotes');
+    if (r.pkg && !buyer.value.includes(r.pkg)) { buyer.value = (buyer.value.trim() + ' ' + r.pkg).trim(); notes.push(r.pkg.toLowerCase().replace('.', '')); }
+    const src = document.getElementById('mSource');
+    if (r.source && !src.value.trim()) { src.value = r.source; notes.push('source link'); }
+
+    say(notes.join(', ') + '. Check everything below before saving.', added.length || r.name ? 'ok' : 'err');
+  });
 
   document.getElementById('mPasteAdd').addEventListener('click', () => {
     const { rows, bad } = parseVehicleLines(document.getElementById('mPaste').value);
