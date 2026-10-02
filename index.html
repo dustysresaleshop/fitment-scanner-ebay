@@ -144,6 +144,15 @@
   .bright-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: 13px; color: var(--muted); }
   .bright-row input[type=range] { flex: 1; accent-color: var(--yellow); }
 
+  /* Box full alert */
+  .box-alert:not(.hidden) { position: fixed; inset: 0; z-index: 1100; background: rgba(0,0,0,.75); display: flex; align-items: center; justify-content: center; padding: 16px; }
+  .box-alert-card { width: 100%; max-width: 440px; background: var(--yellow); color: #1a1a1a; border-radius: 14px; padding: 28px 22px; text-align: center; }
+  .box-alert-card .big { font-size: 34px; font-weight: 800; line-height: 1.15; }
+  .box-alert-card .next { font-size: 22px; font-weight: 700; margin-top: 10px; }
+  .box-alert-card p { font-size: 15px; margin: 14px 0 18px; }
+  .box-alert-card button { background: #1a1a1a; color: #fff; width: 100%; font-size: 17px; }
+  .new-box-glow { border-color: var(--yellow) !important; box-shadow: 0 0 0 3px var(--yellow); }
+
   /* Lock screen */
   .lock:not(.hidden) { position: fixed; inset: 0; z-index: 1000; background: var(--bg); display: flex; align-items: center; justify-content: center; padding: 16px; }
   .lock-box { width: 100%; max-width: 360px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px; }
@@ -195,6 +204,14 @@
 </style>
 </head>
 <body>
+<div class="box-alert hidden" id="boxAlert" role="alertdialog" aria-modal="true" aria-labelledby="boxAlertBig">
+  <div class="box-alert-card">
+    <div class="big" id="boxAlertBig">BOX A IS FULL</div>
+    <div class="next" id="boxAlertNext">Start Box B</div>
+    <p id="boxAlertText"></p>
+    <button id="boxAlertOk">Got it</button>
+  </div>
+</div>
 <div class="lock hidden" id="lockScreen" role="dialog" aria-modal="true" aria-labelledby="lockTitle">
   <div class="lock-box">
     <div class="eyebrow">FITMENT SCANNER</div>
@@ -218,7 +235,7 @@
     <div class="sub">Scan the OEM barcode on the part, or key in the part number. Mock catalog for demo purposes.</div>
   </header>
 
-  <div class="panel">
+  <div class="panel" id="boxPanel">
     <div class="flex-between">
       <div>
         <h2 style="margin:0 0 4px;">Storage box</h2>
@@ -1188,6 +1205,8 @@
 
   async function lookup(rawCode, opts = {}) {
     document.getElementById('doneBanner').classList.add('hidden');
+    const bp = document.getElementById('boxPanel');
+    if (bp.classList.contains('new-box-glow') && nextSlot().spot > 1) bp.classList.remove('new-box-glow');
     const key = normalize(rawCode);
     currentLookup = null;
     hideExtras();
@@ -1363,8 +1382,27 @@
     const s = boxState();
     return { box: boxLetters(Math.floor(s.pushed / s.size)), spot: (s.pushed % s.size) + 1, size: s.size };
   }
+  // Every SKU the app has used, so it never hands one out twice
+  function usedSkus() {
+    const set = new Set();
+    try {
+      (JSON.parse(localStorage.getItem('skus-used:v1')) || []).forEach(s => set.add(s));
+      Object.keys(localStorage).filter(k => k.startsWith('sku-of:v1:')).forEach(k => set.add(localStorage.getItem(k)));
+    } catch (e) {}
+    return set;
+  }
+  function markSkuUsed(sku) {
+    try {
+      const list = JSON.parse(localStorage.getItem('skus-used:v1')) || [];
+      if (!list.includes(sku)) { list.push(sku); localStorage.setItem('skus-used:v1', JSON.stringify(list)); }
+    } catch (e) {}
+  }
   function makeSku(oem, slot) {
-    return `BOX-${slot.box}-${slot.spot}`;
+    const base = `BOX-${slot.box}-${slot.spot}`;
+    const used = usedSkus();
+    if (!used.has(base)) return base;
+    for (let n = 2; n < 100; n++) if (!used.has(`${base}-${n}`)) return `${base}-${n}`;
+    return `${base}-${Date.now() % 100000}`;
   }
   // Remember the SKU each part number was first listed under, so extra copies
   // add to that listing's quantity instead of creating duplicate listings.
@@ -2108,6 +2146,58 @@
     draftPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
 
+  // ---- Box full: big alert + beep, and highlight the new box ----
+  function beep() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      [0, 0.25].forEach(t => {
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.frequency.value = 880; o.connect(g); g.connect(ctx.destination);
+        g.gain.setValueAtTime(0.25, ctx.currentTime + t);
+        g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + t + 0.2);
+        o.start(ctx.currentTime + t); o.stop(ctx.currentTime + t + 0.2);
+      });
+    } catch (e) {}
+  }
+  function showBoxAlert(fullBox, nextBox, detail) {
+    document.getElementById('boxAlertBig').textContent = `BOX ${fullBox} IS FULL`;
+    document.getElementById('boxAlertNext').textContent = `Start Box ${nextBox}`;
+    document.getElementById('boxAlertText').textContent = detail;
+    document.getElementById('boxAlert').classList.remove('hidden');
+    document.getElementById('boxPanel').classList.add('new-box-glow');
+    beep();
+    setTimeout(() => document.getElementById('boxAlertOk').focus(), 50);
+  }
+  document.getElementById('boxAlertOk').addEventListener('click', () => {
+    document.getElementById('boxAlert').classList.add('hidden');
+  });
+
+  // Count the pieces into boxes (only once they're live on eBay). Returns the "where" message.
+  function placeParts(L) {
+    const vLabel = variantLabel(L.opts);
+    const groups = [];
+    let filledBox = '';
+    for (let i = 0; i < L.qty; i++) {
+      const s = nextSlot();
+      whereAdd(L.entry.oem, vLabel ? `${s.box} ${vLabel}` : s.box);
+      const st = boxState();
+      st.pushed += 1;
+      saveBoxState(st);
+      const g = groups[groups.length - 1];
+      if (g && g.box === s.box) g.last = s.spot; else groups.push({ box: s.box, first: s.spot, last: s.spot, size: s.size });
+      if (s.spot === s.size) filledBox = s.box;
+    }
+    renderBoxInfo();
+    const where = groups.map(g => {
+      const n = g.last - g.first + 1;
+      return `${n} in Box ${g.box} (${n > 1 ? '#' + g.first + '-#' + g.last : '#' + g.first} of ${g.size})`;
+    }).join(' and ');
+    if (filledBox) showBoxAlert(filledBox, nextSlot().box, `This part goes: ${where}.`);
+    const full = filledBox ? ` Box ${filledBox} is now full, so the next part starts Box ${nextSlot().box}.` : '';
+    return `Put ${L.qty > 1 ? 'them' : 'this part'}: ${where}.${full} ${whereText(L.entry.oem)}.`;
+  }
+  let pendingPlacement = null;   // a pushed draft waiting to go live before it's counted into a box
+
   // Part finished: clear the screen, show a summary at the top, and get ready for the next part
   function finishPart(text, url) {
     const done = document.getElementById('doneText');
@@ -2134,7 +2224,7 @@
     setTimeout(() => document.getElementById('manualInput').focus(), 300);
   }
 
-  async function sendToEbay() {
+  async function sendToEbay(retried) {
     const pushStatus = document.getElementById('pushStatus');
     const fail = msg => { pushStatus.textContent = msg; pushStatus.className = 'status err'; };
     if (pushBtnEl.disabled) return;
@@ -2157,13 +2247,18 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          sku: L.sku, addQty: L.qty, setQty: L.replaceQty, title, description, oem: L.entry.oem, price: L.price, fits: L.entry.fits,
+          sku: L.sku, isNew: !L.known, addQty: L.qty, setQty: L.replaceQty, title, description, oem: L.entry.oem, price: L.price, fits: L.entry.fits,
           categoryId: L.cat.id, brand: L.brand, aspects: L.aspects, imageUrls: L.imageUrls
         })
       });
       const raw = await resp.text();
       let data = {};
       try { data = JSON.parse(raw); } catch (e) {}
+      if (resp.status === 409 && data.code === 'SKU_TAKEN' && !retried) {
+        markSkuUsed(L.sku);                       // that SKU exists on eBay already: pick the next free one
+        pushBtnEl.disabled = false;
+        return await sendToEbay(true);
+      }
       if (!resp.ok) return fail(`Error ${resp.status}: ${raw.slice(0, 800)}`);
 
       const ebayMsg = data.message || `Sent to eBay (offer ${data.offerId}).`;
@@ -2172,36 +2267,18 @@
       aspectMemSet('part:' + L.entry.oem + ':' + L.cat.id, L.details.aspects);
       if (labelScanner) labelScanner.pauseAuto(false);
 
+      if (!L.known) { rememberSku(L.key, L.sku); markSkuUsed(L.sku); }
+      rememberPrice(L.key, L.price);
       if (L.replaceQty) {
         pushStatus.textContent = `${ebayMsg} SKU ${L.sku}. Quantity fixed, so no box changes.`;
-      } else {
-        if (!L.known) rememberSku(L.key, L.sku);
-        rememberPrice(L.key, L.price);
-        const vLabel = variantLabel(L.opts);
-        // Each piece takes one spot; group them by box for the message
-        const groups = [];
-        let filledBox = '';
-        for (let i = 0; i < L.qty; i++) {
-          const s = nextSlot();
-          whereAdd(L.entry.oem, vLabel ? `${s.box} ${vLabel}` : s.box);
-          const st = boxState();
-          st.pushed += 1;
-          saveBoxState(st);
-          const g = groups[groups.length - 1];
-          if (g && g.box === s.box) g.last = s.spot; else groups.push({ box: s.box, first: s.spot, last: s.spot, size: s.size });
-          if (s.spot === s.size) filledBox = s.box;
-        }
-        renderBoxInfo();
+      } else if (L.known && data.published) {
+        // added to a live listing: count it into a box now
+        pushStatus.textContent = `${ebayMsg} This part was already listed as ${L.sku}, so ${L.qty > 1 ? L.qty + ' were' : 'it was'} added to that listing. ${placeParts(L)}`;
         renderWhere(L.entry.oem);
-        const where = groups.map(g => {
-          const n = g.last - g.first + 1;
-          return `${n} in Box ${g.box} (${n > 1 ? '#' + g.first + '-#' + g.last : '#' + g.first} of ${g.size})`;
-        }).join(' and ');
-        const full = filledBox ? ` Box ${filledBox} is now full, so the next part starts Box ${nextSlot().box}.` : '';
-        const intro = L.known
-          ? `${ebayMsg} This part was already listed as ${L.sku}, so ${L.qty > 1 ? L.qty + ' were' : 'it was'} added to that listing.`
-          : `${ebayMsg} SKU ${L.sku}.`;
-        pushStatus.textContent = `${intro} Put ${L.qty > 1 ? 'them' : 'this part'}: ${where}.${full} ${whereText(L.entry.oem)}.`;
+      } else {
+        // a draft: it gets counted into a box when you publish it
+        pendingPlacement = Object.assign({}, L, { sku: L.sku });
+        pushStatus.textContent = `${ebayMsg} SKU ${L.sku}. Publish it to take it live. It\u2019s counted into a box once it\u2019s live.`;
       }
       pushStatus.className = 'status ok';
 
@@ -2259,8 +2336,12 @@
         }
         btn.classList.add('hidden');
         reviewWrap.classList.add('hidden');
-        const pushed = document.getElementById('pushStatus').textContent;
-        finishPart(`${data.message || 'Published.'} ${pushed}`.trim(), data.listingUrl);
+        let placed = '';
+        if (pendingPlacement && pendingPlacement.sku === btn.dataset.sku) {
+          placed = ` SKU ${pendingPlacement.sku}. ${placeParts(pendingPlacement)}`;
+          pendingPlacement = null;
+        }
+        finishPart(`${data.message || 'Published.'}${placed}`.trim(), data.listingUrl);
       } else {
         status.className = 'status err';
         status.textContent = `Could not publish (${data.step || 'error'} ${resp.status}): ${data.message || raw.slice(0, 600)}`;
