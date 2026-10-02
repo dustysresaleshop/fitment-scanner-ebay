@@ -87,24 +87,39 @@ exports.handler = async (event) => {
     // eBay rejected every vehicle (e.g. heavy-duty trucks not in its catalog):
     // remove the vehicle list and publish without a compatibility chart
     let removedVehicles = false;
+    const report = {};   // details for troubleshooting if eBay still refuses
     if (!resp.ok && /compatibilit/i.test(text) && /invalid/i.test(text)) {
       step = 'remove_vehicles';
       if (!offerSku) {
         const g2 = await fetch(`${base}/sell/inventory/v1/offer/${offerId}`, { headers: jsonHeaders });
         if (g2.ok) offerSku = (await g2.json()).sku || null;
       }
+      report.sku = offerSku;
       if (offerSku) {
-        await fetch(`${base}/sell/inventory/v1/inventory_item/${encodeURIComponent(offerSku)}/product_compatibility`, {
-          method: 'DELETE',
-          headers: { Authorization: `Bearer ${accessToken}` }
-        });
+        const compatUrl = `${base}/sell/inventory/v1/inventory_item/${encodeURIComponent(offerSku)}/product_compatibility`;
+        const before = await fetch(compatUrl, { headers: jsonHeaders });
+        report.vehiclesBefore = before.ok ? ((await before.json()).compatibleProducts || []).length : `none (${before.status})`;
+        const del = await fetch(compatUrl, { method: 'DELETE', headers: jsonHeaders });
+        report.removeResult = del.status + (del.ok || del.status === 204 ? ' ok' : ' ' + summarize(await del.text()));
+        const after = await fetch(compatUrl, { headers: jsonHeaders });
+        report.vehiclesAfter = after.ok ? ((await after.json()).compatibleProducts || []).length : `none (${after.status})`;
+        const off = await fetch(`${base}/sell/inventory/v1/offer/${offerId}`, { headers: jsonHeaders });
+        if (off.ok) {
+          const o = await off.json();
+          report.offerStatus = o.status;
+          report.marketplace = o.marketplaceId;
+          report.category = o.categoryId;
+        }
         removedVehicles = true;
         step = 'publish_retry';
         resp = await doPublish();
         text = await resp.text();
       }
     }
-    if (!resp.ok) return reply(resp.status, { step, message: summarize(text) });
+    if (!resp.ok) {
+      const extra = Object.keys(report).length ? ' | Details: ' + JSON.stringify(report) : '';
+      return reply(resp.status, { step, message: summarize(text) + extra });
+    }
 
     let d = {};
     try { d = JSON.parse(text); } catch (e) {}
