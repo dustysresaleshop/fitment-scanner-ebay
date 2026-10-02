@@ -987,6 +987,36 @@
     return best;
   }
 
+  // Common part words: a sentence containing one of these is probably describing the part
+  const PART_WORDS = new Set(('switch valve spring springs housing moulding molding gasket seal seals pump sensor bracket cover panel ' +
+    'handle cup lamp light lens bulb socket filter belt hose kit pad pads shoe shoes rotor drum cable relay module motor regulator ' +
+    'latch lock hinge knob bezel emblem badge ornament nameplate script mirror glass weatherstrip weatherstripping clip clips bolt nut ' +
+    'screw washer bearing bushing bushings mount arm link rod piston ring rings cam camshaft crankshaft lifter rocker pushrod injector ' +
+    'carburetor carb choke thermostat sender gauge cluster harness connector plug wire coil cap distributor alternator starter solenoid ' +
+    'fan radiator shroud tank line tube pipe muffler manifold grille bumper fender hood door window wiper blade nozzle reservoir ' +
+    'bottle vent duct actuator servo lever override adjuster boot insulator retainer spacer shim pulley tensioner idler gear sprocket ' +
+    'chain cylinder caliper hub spindle joint tie end shaft axle yoke flange damper balancer flywheel clutch disc diaphragm fork ' +
+    'speedometer odometer tachometer clock horn buzzer resistor fuse breaker transmitter receiver antenna speaker trim pocket ' +
+    'pull visor armrest console tray bin ashtray lighter cushion pedal stop guard shield deflector spoiler molding strip decal ' +
+    'mat carpet headliner liner splash flap mudflap tailgate step running board lamp(s) assembly unit element core heater blower ' +
+    'evaporator condenser compressor accumulator drier orifice').split(' '));
+
+  // Last resort: the first sentence that describes a part, e.g. "Ford Motorcraft backup/reverse light switch used for..."
+  function nameFromDescribingSentence(clean) {
+    const lines = clean.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    for (const line of lines) {
+      let s = line.replace(/^[*\-•\s]*(?:Application|Description|Item|Product|Part)\s*:\s*/i, '');
+      s = s.split(/\.(?:\s|$)/)[0];                                          // first sentence only
+      s = s.split(/\s(?:used|for|fits|fit|compatible|designed|that|which|with|on|in|from)\s/i)[0];
+      if (s.length > 120) continue;
+      const name = nameFromText(s);
+      if (!name) continue;
+      const words = name.toLowerCase().split(/[\s\/-]+/);
+      if (words.some(w => PART_WORDS.has(w))) return name;
+    }
+    return '';
+  }
+
   function smartParse(text, pn) {
     const result = { rows: [], name: '', pkg: '', source: '' };
     const clean = String(text).replace(/[\u2013\u2014]/g, '-').replace(/\u00a0/g, ' ');
@@ -1034,6 +1064,7 @@
       if (m) result.name = nameFromText(m[1]);
     }
     if (!result.name) result.name = nameFromPartLines(clean, pn);   // from title / label lines with the part number
+    if (!result.name) result.name = nameFromDescribingSentence(clean);
 
     // 4) Package count
     m = clean.match(/\b(?:pkg|package|pack|set|box)\s+of\s+(\d{1,3})\b/i) || clean.match(/\b(\d{1,3})\s*(?:pcs|pieces|pc)\b/i);
