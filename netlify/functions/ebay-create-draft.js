@@ -37,7 +37,8 @@ exports.handler = async (event) => {
 
   let step = 'start';
   try {
-    const { sku, title, description, oem, price, fits, categoryId, brand, aspects: extraAspects, imageUrls } = JSON.parse(event.body || '{}');
+    const { sku, title, description, oem, price, fits, categoryId, brand, aspects: extraAspects, imageUrls, addQty } = JSON.parse(event.body || '{}');
+    const add = Math.min(Math.max(parseInt(addQty, 10) || 1, 1), 999);   // how many pieces are being added now
     if (!sku || !title) return reply(400, { step, message: 'Missing sku or title.' });
 
     const locationKey = process.env.EBAY_MERCHANT_LOCATION_KEY || 'main-warehouse';
@@ -60,7 +61,7 @@ exports.handler = async (event) => {
     // Check how many of this part are already listed, so a repeat scan adds
     // to the count instead of resetting it back to 1 each time.
     step = 'check_quantity';
-    let quantity = 1;
+    let quantity = add;
     let existingImages = [];
     const existingItemResp = await fetch(`${base}/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}`, {
       method: 'GET',
@@ -71,7 +72,7 @@ exports.handler = async (event) => {
       const currentQty = existingItem.availability && existingItem.availability.shipToLocationAvailability
         ? existingItem.availability.shipToLocationAvailability.quantity
         : 0;
-      quantity = (currentQty || 0) + 1;
+      quantity = (currentQty || 0) + add;
       existingImages = (existingItem.product && existingItem.product.imageUrls) || [];
     }
     // A 404 here just means this part has never been scanned before, so it
