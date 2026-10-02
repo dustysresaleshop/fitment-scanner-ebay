@@ -305,6 +305,7 @@
     <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line);">
       <div class="part-meta" style="margin-bottom:8px;">Your price (USD)</div>
       <input type="text" id="priceInput" placeholder="e.g. 24.99" inputmode="decimal" autocomplete="off" style="width:100%;">
+      <div class="part-meta" id="priceNote" style="margin-top:4px;"></div>
       <label class="part-meta" for="qtyInput" style="display:block;margin:12px 0 6px;">Quantity (how many of this part you’re listing now)</label>
       <input type="number" id="qtyInput" min="1" max="999" step="1" value="1" inputmode="numeric">
       <div class="demo-codes" style="margin-top:8px;"><a id="soldLink" href="#" target="_blank" rel="noopener" style="color:var(--yellow);">Check sold prices on eBay</a></div>
@@ -567,8 +568,11 @@
     renderFits(rawCode, entry);
     renderWhere(entry.oem);
     resetOptions();
+    prefillPrice();
     loadCategories(entry.name, entry.oem);
     document.getElementById('priceInput').value = '';
+    document.getElementById('priceInput').dataset.auto = '';
+    document.getElementById('priceNote').textContent = '';
     document.getElementById('qtyInput').value = '1';
     document.getElementById('soldLink').href = 'https://www.ebay.com/sch/i.html?_nkw=' + encodeURIComponent(entry.oem) + '&LH_Sold=1&LH_Complete=1';
     resultPanel.classList.remove('hidden');
@@ -1815,6 +1819,32 @@
   function partKey(oem, o) {
     return (o && (o.side || o.position || o.color)) ? `${oem}|${o.side || ''}|${o.position || ''}|${o.color || ''}` : oem;
   }
+  function savedPrice(key) {
+    try { return localStorage.getItem('price-of:v1:' + key) || ''; } catch (e) { return ''; }
+  }
+  function rememberPrice(key, price) {
+    try { localStorage.setItem('price-of:v1:' + key, price); } catch (e) {}
+  }
+  // Fill the price box with the last price used for this part, unless you've typed your own
+  function prefillPrice() {
+    const box = document.getElementById('priceInput');
+    const note = document.getElementById('priceNote');
+    let entry;
+    try { entry = JSON.parse(resultPanel.dataset.entry); } catch (e) { return; }
+    if (box.value.trim() && box.dataset.auto !== '1') return;
+    const opts = getOptions();
+    const p = savedPrice(partKey(entry.oem, opts)) || savedPrice(entry.oem);
+    if (p) {
+      box.value = p;
+      box.dataset.auto = '1';
+      note.textContent = `Last listed at $${Number(p).toFixed(2)}. Change it if needed.`;
+    } else if (box.dataset.auto === '1') {
+      box.value = '';
+      box.dataset.auto = '';
+      note.textContent = '';
+    }
+  }
+
   function variantLabel(o) {
     return o ? [o.position, o.side, o.color].filter(Boolean).join(' ') : '';
   }
@@ -1837,6 +1867,11 @@
     return a;
   }
   resetOptions();
+  document.getElementById('priceInput').addEventListener('input', e => {
+    e.target.dataset.auto = '';
+    document.getElementById('priceNote').textContent = '';
+  });
+  [optSide, optPosition, optColor].forEach(sel => sel.addEventListener('change', prefillPrice));
 
   // ---- Listing title, description, preview, and sending to eBay ----
   const titleInput = document.getElementById('titleInput');
@@ -2066,6 +2101,7 @@
 
       {
         if (!L.known) rememberSku(L.key, L.sku);
+        rememberPrice(L.key, L.price);
         const vLabel = variantLabel(L.opts);
         // Each piece takes one spot; group them by box for the message
         const groups = [];
