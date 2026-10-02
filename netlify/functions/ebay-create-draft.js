@@ -202,7 +202,19 @@ exports.handler = async (event) => {
           body: JSON.stringify(offer)
         });
         if (upd.ok || upd.status === 204) {
-          return reply(200, { message: `Existing listing updated on eBay. Quantity is now ${quantity}.`, offerId: existingId });
+          // Is this listing already live, or still a draft that needs publishing?
+          let published = false;
+          try {
+            const g = await fetch(`${base}/sell/inventory/v1/offer/${existingId}`, { headers });
+            if (g.ok) published = (await g.json()).status === 'PUBLISHED';
+          } catch (e) {}
+          return reply(200, {
+            message: published
+              ? `Existing listing updated on eBay. Quantity is now ${quantity}.`
+              : `Existing draft updated on eBay (not live yet). Quantity is now ${quantity}.`,
+            offerId: existingId,
+            published
+          });
         }
         return reply(upd.status, { step: 'offer_update', message: summarize(await upd.text()) });
       }
@@ -211,7 +223,7 @@ exports.handler = async (event) => {
 
     let offerData = {};
     try { offerData = JSON.parse(offerText); } catch (e) {}
-    return reply(200, { message: `Draft created on eBay. Quantity is ${quantity}.`, offerId: offerData.offerId });
+    return reply(200, { message: `Draft created on eBay. Quantity is ${quantity}.`, offerId: offerData.offerId, published: false });
   } catch (err) {
     return reply(500, { step, message: err.message });
   }
