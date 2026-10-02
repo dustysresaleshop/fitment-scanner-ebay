@@ -37,7 +37,7 @@ exports.handler = async (event) => {
 
   let step = 'start';
   try {
-    const { sku, title, description, oem, price, fits, categoryId, brand, aspects: extraAspects, imageUrls, addQty, setQty } = JSON.parse(event.body || '{}');
+    const { sku, title, description, oem, price, fits, categoryId, brand, aspects: extraAspects, imageUrls, addQty, setQty, isNew } = JSON.parse(event.body || '{}');
     const add = Math.min(Math.max(parseInt(addQty, 10) || 1, 1), 999);   // how many pieces are being added now
     if (!sku || !title) return reply(400, { step, message: 'Missing sku or title.' });
 
@@ -67,6 +67,10 @@ exports.handler = async (event) => {
       method: 'GET',
       headers: { Authorization: `Bearer ${accessToken}`, 'Accept-Language': 'en-US' }
     });
+    if (existingItemResp.ok && isNew) {
+      // The app thinks this is a brand-new listing, but eBay already has this SKU: don't overwrite it
+      return reply(409, { step, code: 'SKU_TAKEN', message: `SKU ${sku} is already used on eBay.` });
+    }
     if (existingItemResp.ok) {
       const existingItem = await existingItemResp.json();
       const currentQty = existingItem.availability && existingItem.availability.shipToLocationAvailability
