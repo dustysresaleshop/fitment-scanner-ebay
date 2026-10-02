@@ -1822,6 +1822,13 @@
   function optionWords(o) {
     return [o.position, o.side === 'Left' ? 'Driver Side' : o.side === 'Right' ? 'Passenger Side' : '', o.color].filter(Boolean);
   }
+  // Item specifics added to every listing (required details picked on screen take priority)
+  const STANDARD_ASPECTS = {
+    'Vintage Part': ['Yes'],
+    'Performance Part': ['No'],
+    'Universal Fitment': ['No']
+  };
+
   function optionAspects(o) {
     const a = {};
     const place = [o.position, o.side].filter(Boolean);
@@ -1922,7 +1929,7 @@
     const sku = known || makeSku(entry.oem, slot);
     const firstMake = entry.fits[0] ? entry.fits[0].make : 'Ford';
     const brand = /^(Ford|Mercury|Lincoln|Edsel)$/i.test(firstMake) ? 'Ford' : firstMake;
-    const aspects = Object.assign({}, optionAspects(opts), details.aspects);   // required details win
+    const aspects = Object.assign({}, STANDARD_ASPECTS, optionAspects(opts), details.aspects);   // required details win
     return { entry, price, qty, cat, details, aspects, opts, key, imageUrls, known, slot, sku, brand };
   }
 
