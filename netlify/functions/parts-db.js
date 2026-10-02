@@ -41,7 +41,7 @@
 
      try {
        connectLambda(event);
-       const store = getStore({ name: 'parts', consistency: 'strong' });
+             const store = getStore('parts');
        const qs = event.queryStringParameters || {};
 
        if (event.httpMethod === 'GET' && qs.export) {
