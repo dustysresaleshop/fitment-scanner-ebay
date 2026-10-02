@@ -23,6 +23,8 @@
   function fixPrefix(p) {
     const c = p.split('');
     if (/[0-9]/.test(c[3])) c[3] = TO_LETTER[c[3]] || c[3]; // 4th char is a letter, usually Z
+    // 1950s-1990s numbers (B, C, D, E, F + year digit): the 2nd char is always a digit, e.g. F0AZ not FOAZ
+    if (/[BCDEF]/.test(c[0]) && /[A-Z]/.test(c[1]) && TO_DIGIT[c[1]]) c[1] = TO_DIGIT[c[1]];
     return c.join('');
   }
 
