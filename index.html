@@ -2205,8 +2205,8 @@
       }
       pushStatus.className = 'status ok';
 
-      if (L.known && !L.replaceQty) {
-        finishPart(pushStatus.textContent);          // existing listing: nothing left to do
+      if (L.known && !L.replaceQty && data.published) {
+        finishPart(pushStatus.textContent);          // already live: nothing left to do
         return;
       }
       if (data.offerId) {
