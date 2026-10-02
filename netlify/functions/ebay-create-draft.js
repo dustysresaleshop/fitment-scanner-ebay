@@ -37,7 +37,7 @@ exports.handler = async (event) => {
 
   let step = 'start';
   try {
-    const { sku, title, description, oem, price, fits, categoryId, brand, aspects: extraAspects, imageUrls, addQty } = JSON.parse(event.body || '{}');
+    const { sku, title, description, oem, price, fits, categoryId, brand, aspects: extraAspects, imageUrls, addQty, setQty } = JSON.parse(event.body || '{}');
     const add = Math.min(Math.max(parseInt(addQty, 10) || 1, 1), 999);   // how many pieces are being added now
     if (!sku || !title) return reply(400, { step, message: 'Missing sku or title.' });
 
@@ -72,7 +72,7 @@ exports.handler = async (event) => {
       const currentQty = existingItem.availability && existingItem.availability.shipToLocationAvailability
         ? existingItem.availability.shipToLocationAvailability.quantity
         : 0;
-      quantity = (currentQty || 0) + add;
+      quantity = setQty ? add : (currentQty || 0) + add;   // setQty: make this the total instead of adding
       existingImages = (existingItem.product && existingItem.product.imageUrls) || [];
     }
     // A 404 here just means this part has never been scanned before, so it
@@ -128,7 +128,14 @@ exports.handler = async (event) => {
     // their vehicle on eBay Motors will actually find this part.
     // eBay's field is "compatibleProducts", and its property names are
     // lowercase ("make"/"model"/"year") -- confirmed via a live test call.
-    if (Array.isArray(fits) && fits.length) {
+    if (!Array.isArray(fits) || !fits.length) {
+      // No vehicles: remove any vehicle list left on eBay from an earlier push
+      step = 'clear_compatibility';
+      await fetch(`${base}/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}/product_compatibility`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${accessToken}` }
+      });   // a 404 just means there was nothing to remove
+    } else {
       step = 'compatibility';
       const compatibleProducts = [];
       fits.forEach(f => {
@@ -195,7 +202,7 @@ exports.handler = async (event) => {
           body: JSON.stringify(offer)
         });
         if (upd.ok || upd.status === 204) {
-          return reply(200, { message: `Existing draft updated on eBay. Quantity is now ${quantity}.`, offerId: existingId });
+          return reply(200, { message: `Existing listing updated on eBay. Quantity is now ${quantity}.`, offerId: existingId });
         }
         return reply(upd.status, { step: 'offer_update', message: summarize(await upd.text()) });
       }
