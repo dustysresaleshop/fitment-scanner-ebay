@@ -1,0 +1,8 @@
+   {
+     "name": "fitment-scanner",
+     "private": true,
+     "description": "Netlify uses this to install the database library for the functions.",
+     "dependencies": {
+       "@netlify/blobs": "^8.1.0"
+     }
+   }
