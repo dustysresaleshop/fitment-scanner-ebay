@@ -312,6 +312,7 @@
       <div class="part-meta" id="priceNote" style="margin-top:4px;"></div>
       <label class="part-meta" for="qtyInput" style="display:block;margin:12px 0 6px;">Quantity (how many of this part you’re listing now)</label>
       <input type="number" id="qtyInput" min="1" max="999" step="1" value="1" inputmode="numeric">
+      <label class="enhance-check"><input type="checkbox" id="qtyReplace"> Set eBay’s total to this number (don’t add). Use this to fix a quantity; boxes don’t change.</label>
       <div class="demo-codes" style="margin-top:8px;"><a id="soldLink" href="#" target="_blank" rel="noopener" style="color:var(--yellow);">Check sold prices on eBay</a></div>
     </div>
     <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line);">
@@ -576,6 +577,7 @@
     document.getElementById('priceInput').dataset.auto = '';
     document.getElementById('priceNote').textContent = '';
     document.getElementById('qtyInput').value = '1';
+    document.getElementById('qtyReplace').checked = false;
     // ...then pick this part's previous options and fill in its last price
     resetOptions();
     preselectPreviousVariant(entry.oem);
@@ -1990,6 +1992,7 @@
     if (!/^\d+(\.\d{1,2})?$/.test(price)) return { error: 'Enter a price first (numbers only, like 24.99).' };
     const qty = parseInt(document.getElementById('qtyInput').value, 10);
     if (!(qty >= 1 && qty <= 999)) return { error: 'Quantity should be a whole number from 1 to 999.' };
+    const replaceQty = document.getElementById('qtyReplace').checked;
     const cat = selectedCategory();
     if (!cat || !cat.id) return { error: 'Pick an eBay category first (above the price).' };
     if (loadedAspectCat !== cat.id) return { error: 'Still loading the details eBay requires for this category. Try again in a moment.' };
@@ -2006,7 +2009,7 @@
     const firstMake = entry.fits[0] ? entry.fits[0].make : 'Ford';
     const brand = /^(Ford|Mercury|Lincoln|Edsel)$/i.test(firstMake) ? 'Ford' : firstMake;
     const aspects = Object.assign({}, STANDARD_ASPECTS, optionAspects(opts), details.aspects);   // required details win
-    return { entry, price, qty, cat, details, aspects, opts, key, imageUrls, known, slot, sku, brand };
+    return { entry, price, qty, replaceQty, cat, details, aspects, opts, key, imageUrls, known, slot, sku, brand };
   }
 
   function previewRow(label, content) {
@@ -2028,7 +2031,9 @@
       ? `${L.known} (${vLabel ? vLabel + ' version ' : ''}already listed). Pushing adds ${L.qty} to its quantity, starting in Box ${L.slot.box} (#${L.slot.spot} of ${L.slot.size}).`
       : `${L.sku}${vLabel ? ' (new listing for the ' + vLabel + ' version)' : ''}, goes in Box ${L.slot.box} (#${L.slot.spot} of ${L.slot.size})`));
     body.appendChild(previewRow('Price', `$${Number(L.price).toFixed(2)}`));
-    body.appendChild(previewRow('Quantity', L.known
+    body.appendChild(previewRow('Quantity', L.replaceQty
+      ? `Sets the eBay total to ${L.qty} (no boxes change)`
+      : L.known
       ? `Adds ${L.qty} to the existing listing`
       : `${L.qty}${L.qty > 1 ? ' (one listing with ' + L.qty + ' available)' : ''}`));
     body.appendChild(previewRow('Shipping & returns', 'From your eBay business policies (shipping, payment, returns) set in Netlify'));
@@ -2136,6 +2141,7 @@
 
     const L = buildListing();
     if (L.error) return fail(L.error);
+    if (L.replaceQty && !L.known) return fail('"Set eBay\u2019s total" is for fixing a listing that already exists. This part isn\u2019t listed yet, so uncheck it.');
     if (!L.known && !L.imageUrls.length) return fail('Add at least one photo first. eBay requires a photo to publish a listing.');
     const title = titleInput.value.trim();
     if (!title) return fail('The title is empty.');
@@ -2151,7 +2157,7 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          sku: L.sku, addQty: L.qty, title, description, oem: L.entry.oem, price: L.price, fits: L.entry.fits,
+          sku: L.sku, addQty: L.qty, setQty: L.replaceQty, title, description, oem: L.entry.oem, price: L.price, fits: L.entry.fits,
           categoryId: L.cat.id, brand: L.brand, aspects: L.aspects, imageUrls: L.imageUrls
         })
       });
@@ -2166,7 +2172,9 @@
       aspectMemSet('part:' + L.entry.oem + ':' + L.cat.id, L.details.aspects);
       if (labelScanner) labelScanner.pauseAuto(false);
 
-      {
+      if (L.replaceQty) {
+        pushStatus.textContent = `${ebayMsg} SKU ${L.sku}. Quantity fixed, so no box changes.`;
+      } else {
         if (!L.known) rememberSku(L.key, L.sku);
         rememberPrice(L.key, L.price);
         const vLabel = variantLabel(L.opts);
@@ -2197,7 +2205,7 @@
       }
       pushStatus.className = 'status ok';
 
-      if (L.known) {
+      if (L.known && !L.replaceQty) {
         finishPart(pushStatus.textContent);          // existing listing: nothing left to do
         return;
       }
