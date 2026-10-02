@@ -571,14 +571,16 @@
     document.getElementById('resultCode').textContent = rawCode;
     renderFits(rawCode, entry);
     renderWhere(entry.oem);
-    resetOptions();
-    preselectPreviousVariant(entry.oem);
-    prefillPrice();
-    loadCategories(entry.name, entry.oem);
+    // clear the last part's price and quantity first...
     document.getElementById('priceInput').value = '';
     document.getElementById('priceInput').dataset.auto = '';
     document.getElementById('priceNote').textContent = '';
     document.getElementById('qtyInput').value = '1';
+    // ...then pick this part's previous options and fill in its last price
+    resetOptions();
+    preselectPreviousVariant(entry.oem);
+    prefillPrice();
+    loadCategories(entry.name, entry.oem);
     document.getElementById('soldLink').href = 'https://www.ebay.com/sch/i.html?_nkw=' + encodeURIComponent(entry.oem) + '&LH_Sold=1&LH_Complete=1';
     resultPanel.classList.remove('hidden');
     resultPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
