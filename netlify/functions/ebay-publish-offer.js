@@ -48,6 +48,7 @@ exports.handler = async (event) => {
     // Make the draft use your current policies (from Netlify) before going live,
     // so a policy change doesn't require pushing the part again
     step = 'refresh_policies';
+    let offerSku = null;
     const wanted = {};
     if (process.env.EBAY_FULFILLMENT_POLICY_ID) wanted.fulfillmentPolicyId = process.env.EBAY_FULFILLMENT_POLICY_ID;
     if (process.env.EBAY_PAYMENT_POLICY_ID) wanted.paymentPolicyId = process.env.EBAY_PAYMENT_POLICY_ID;
@@ -56,6 +57,7 @@ exports.handler = async (event) => {
       const g = await fetch(`${base}/sell/inventory/v1/offer/${offerId}`, { headers: jsonHeaders });
       if (g.ok) {
         const offer = await g.json();
+        offerSku = offer.sku || null;
         const have = offer.listingPolicies || {};
         const differs = Object.keys(wanted).some(k => have[k] !== wanted[k]);
         if (differs) {
@@ -75,16 +77,33 @@ exports.handler = async (event) => {
     }
 
     step = 'publish';
-    const resp = await fetch(`${base}/sell/inventory/v1/offer/${offerId}/publish`, {
+    const doPublish = () => fetch(`${base}/sell/inventory/v1/offer/${offerId}/publish`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Language': 'en-US',
-        'Accept-Language': 'en-US'
-      }
+      headers: jsonHeaders
     });
-    const text = await resp.text();
+    let resp = await doPublish();
+    let text = await resp.text();
+
+    // eBay rejected every vehicle (e.g. heavy-duty trucks not in its catalog):
+    // remove the vehicle list and publish without a compatibility chart
+    let removedVehicles = false;
+    if (!resp.ok && /compatibilit/i.test(text) && /invalid/i.test(text)) {
+      step = 'remove_vehicles';
+      if (!offerSku) {
+        const g2 = await fetch(`${base}/sell/inventory/v1/offer/${offerId}`, { headers: jsonHeaders });
+        if (g2.ok) offerSku = (await g2.json()).sku || null;
+      }
+      if (offerSku) {
+        await fetch(`${base}/sell/inventory/v1/inventory_item/${encodeURIComponent(offerSku)}/product_compatibility`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${accessToken}` }
+        });
+        removedVehicles = true;
+        step = 'publish_retry';
+        resp = await doPublish();
+        text = await resp.text();
+      }
+    }
     if (!resp.ok) return reply(resp.status, { step, message: summarize(text) });
 
     let d = {};
@@ -92,7 +111,8 @@ exports.handler = async (event) => {
     const sandbox = /sandbox/i.test(base);
     const listingUrl = d.listingId ? `https://www.${sandbox ? 'sandbox.' : ''}ebay.com/itm/${d.listingId}` : null;
     return reply(200, {
-      message: `Published! eBay listing ${d.listingId || ''} is live${sandbox ? ' on Sandbox' : ''}.`,
+      message: `Published! eBay listing ${d.listingId || ''} is live${sandbox ? ' on Sandbox' : ''}.` +
+        (removedVehicles ? ' It was published WITHOUT a vehicle chart, because eBay didn\u2019t accept any of the vehicles. Keep the fitment in the title or buyer notes.' : ''),
       listingId: d.listingId || null,
       listingUrl,
       sandbox,
