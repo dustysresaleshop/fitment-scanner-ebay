@@ -936,7 +936,46 @@
     return out;
   }
 
-  function smartParse(text) {
+  // Words that are never part of a part's name
+  const NAME_FILLER = new Set(('nos new old stock oem genuine original vintage classic ford fords mercury lincoln motorcraft ' +
+    'fits fit fitment for to and the a an with w w/ of in on part parts number numbers no num pn mpn manufacturer brand ' +
+    'item items listing ebay sku condition qty quantity one two three pkg package pack pcs pc pieces piece set box each ' +
+    'truck trucks pickup car cars vehicle vehicles models model year years free shipping sale buy now usd interchange ' +
+    'replaces replacement supersedes superseded by oe us made usa in-stock stock instock factory dealer').split(' '));
+
+  function nameFromPartLines(clean, pn) {
+    if (!pn) return '';
+    const flat = pn.replace(/[^A-Z0-9]/gi, '');
+    // match the part number with or without dashes/spaces, e.g. C9TZ-2D176-C, C9TZ 2D176 C, C9TZ2D176C
+    const pnRe = new RegExp(flat.split('').join('[\\s-]?'), 'i');
+    let best = '';
+    clean.split(/\r?\n/).forEach(line => {
+      if (!pnRe.test(line) || line.length > 200) return;
+      let s = line.replace(pnRe, ' ');
+      s = s.replace(/https?:\/\/\S+/g, ' ');
+      s = s.replace(/\b[A-Z0-9]{4}[\s-]?[0-9][A-Z0-9]{3,6}[\s-]?[A-Z]{1,3}\b/gi, ' ');      // other Ford-style part numbers
+      // remove vehicle model names and year ranges
+      findModels(s).sort((a, b) => b.pos - a.pos).forEach(m => {
+        s = s.slice(0, m.pos) + ' ' + s.slice(m.pos).replace(/^\S+(\s+(II|2|Victoria|Vic|Marquis|Car|Wagon|Hundred|V|VI|VII|VIII))?/i, ' ');
+      });
+      s = s.replace(/'?\b(19|20)?\d{2}\s*(-|to|thru|through)\s*'?(19|20)?\d{2}\b/gi, ' ')
+           .replace(/\b(19|20)\d{2}\+?/g, ' ')
+           .replace(/\$\s?\d+(\.\d+)?/g, ' ')
+           .replace(/\b\d+(\.\d+)?\s*(cyl|l)\b/gi, ' ')
+           .replace(/[#\/|:;,()\[\]"*•·]+/g, ' ')
+           .replace(/\s-\s/g, ' ');
+      const words = s.split(/\s+/).filter(w => w && !/^\d+$/.test(w) && !NAME_FILLER.has(w.toLowerCase().replace(/[.,]$/, '')));
+      if (!words.length || words.length > 7) return;
+      const name = words.join(' ').replace(/[.,-]+$/, '');
+      if (name.length >= 3 && name.length > best.length) best = name;
+    });
+    return best
+      .toLowerCase()
+      .replace(/\b\w/g, c => c.toUpperCase())
+      .replace(/\b(Lh|Rh|Oem|Nos)\b/g, w => w.toUpperCase());
+  }
+
+  function smartParse(text, pn) {
     const result = { rows: [], name: '', pkg: '', source: '' };
     const clean = String(text).replace(/[\u2013\u2014]/g, '-').replace(/\u00a0/g, ' ');
 
@@ -979,6 +1018,7 @@
         .replace(/\s+/g, ' ').trim()
         .replace(/\b\w/g, c => c.toUpperCase());
     }
+    if (!result.name) result.name = nameFromPartLines(clean, pn);   // from title / label lines with the part number
 
     // 4) Package count
     m = clean.match(/\b(?:pkg|package|pack|set|box)\s+of\s+(\d{1,3})\b/i) || clean.match(/\b(\d{1,3})\s*(?:pcs|pieces|pc)\b/i);
@@ -995,7 +1035,7 @@
     const status = document.getElementById('mSmartStatus');
     const say = (t, k) => { status.textContent = t; status.className = 'status' + (k ? ' ' + k : ''); };
     if (!box.value.trim()) { say('Paste some text first.', 'err'); return; }
-    const r = smartParse(box.value);
+    const r = smartParse(box.value, manualPn);
     const notes = [];
 
     const have = new Set(manualRows.map(x => `${x.make}|${x.model}|${x.years}`.toLowerCase()));
@@ -1005,6 +1045,7 @@
     notes.push(added.length ? `Added ${added.length} vehicle${added.length > 1 ? 's' : ''}` : 'No new vehicles found');
 
     const nameBox = document.getElementById('manualName');
+    if (!r.name && !nameBox.value.trim()) notes.push('couldn\u2019t find a part name, so please type one in');
     if (r.name) {
       if (!nameBox.value.trim()) { nameBox.value = r.name; notes.push(`part name "${r.name}"`); }
       else if (nameBox.value.trim().toLowerCase() !== r.name.toLowerCase()) notes.push(`(found the name "${r.name}", but kept yours)`);
